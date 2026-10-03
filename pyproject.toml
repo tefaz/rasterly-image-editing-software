@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rasterly"
+version = "0.1.0"
+description = "A focused native desktop raster editor"
+requires-python = ">=3.11"
+dependencies = ["PyQt6>=6.6", "Pillow>=10.2", "numpy>=1.26"]
+
+[project.optional-dependencies]
+opencv = ["opencv-python-headless>=4.10,<5"]
+
+[project.scripts]
+rasterly = "rasterly.app:main"
+
+[tool.setuptools.packages.find]
+include = ["rasterly*"]
+
+[tool.setuptools.package-data]
+rasterly = ["resources/*.svg"]

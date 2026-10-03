@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Rasterly
+Comment=Lightweight raster image editor
+Exec=/home/mads/Projects/rasterly-image-editing-software/run.sh %f
+Icon=/home/mads/Projects/rasterly-image-editing-software/rasterly/resources/rasterly.svg
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;
+MimeType=image/png;image/jpeg;image/webp;
+StartupWMClass=Rasterly
