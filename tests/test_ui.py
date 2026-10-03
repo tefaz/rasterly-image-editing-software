@@ -282,7 +282,11 @@ class InteractionTests(unittest.TestCase):
             self.assertAlmostEqual(self.canvas.zoom, 1.37)
             self.assertEqual(self.canvas.pan, QPointF(-30, 50))
             self.assertEqual(self.canvas.tool_id, "lasso")
-            self.assertEqual(self.controller.history.state_labels, ["New image", "New layer"])
+            self.assertEqual(self.controller.history.state_labels,
+                             ["New image", "New layer", "Rectangle selection"])
+            self.controller.undo()
+            self.assertIsNone(self.controller.document.selection)
+            self.assertEqual(len(self.controller.document.layers), 2)
             self.controller.undo()
             self.assertEqual(len(self.controller.document.layers), 1)
             self.controller.switch_document(1)
@@ -383,7 +387,10 @@ class InteractionTests(unittest.TestCase):
         self.assertIs(self.controller.active_session, source)
         self.assertEqual(len(self.controller.document.layers), 1)
         self.assertEqual(self.controller.document.selection.bounds, (20, 20, 60, 50))
-        self.assertFalse(self.controller.history.undo_stack)
+        self.assertEqual(self.controller.history.state_labels, ["New image", "Rectangle selection"])
+        self.controller.undo()
+        self.assertIsNone(self.controller.document.selection)
+        self.assertEqual(len(self.controller.document.layers), 1)
 
     def test_clipboard_selection_survives_closing_source_tab(self):
         self.controller.set_selection(Selection.rectangle(20, 20, 60, 50))

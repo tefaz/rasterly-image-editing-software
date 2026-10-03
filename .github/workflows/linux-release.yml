@@ -1,0 +1,133 @@
+name: Linux release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - '.github/workflows/linux-release.yml'
+      - 'packaging/**'
+      - 'rasterly/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'LICENSE'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: packaging/requirements-linux.txt
+      - name: Install Linux build and desktop libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils dpkg-dev desktop-file-utils shared-mime-info \
+            xvfb xauth fonts-dejavu-core libgl1 libegl1 libdbus-1-3 \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 \
+            libxcb-randr0 libxcb-shape0 libxcb-xfixes0 libxcb-sync1 libxcb-xkb1
+      - name: Install pinned release dependencies
+        run: |
+          python -m pip install -r packaging/requirements-linux.txt
+          python -m pip install --no-deps .
+      - name: Validate desktop metadata
+        run: desktop-file-validate packaging/Rasterly.desktop
+      - name: Run document and UI checks
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -q
+      - name: Build and check frozen runtime
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python packaging/build_linux.py
+      - name: Save release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Rasterly-linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  verify:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:22.04', 'debian:12', 'ubuntu:24.04']
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install graphical smoke test requirements
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates xvfb xauth libgl1 libegl1 fonts-dejavu-core
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Rasterly-linux-x86_64
+          path: dist
+      - name: Verify download checksums and install Debian package
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ./rasterly_*_amd64.deb
+      - name: Exercise installed application without a Python environment
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: |
+          rasterly --version
+          env -u PYTHONPATH -u PYTHONHOME xvfb-run -a rasterly --packaging-smoke-test
+          test -f /usr/share/applications/Rasterly.desktop
+          test -f /usr/share/icons/hicolor/scalable/apps/rasterly.svg
+      - name: Exercise portable AppImage
+        env:
+          QT_QPA_PLATFORM: xcb
+        run: |
+          chmod +x dist/*.AppImage
+          env -u PYTHONPATH -u PYTHONHOME xvfb-run -a sh -c \
+            'exec ./dist/*.AppImage --appimage-extract-and-run --packaging-smoke-test'
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, verify]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Rasterly-linux-x86_64
+          path: dist
+      - name: Publish checked release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > /tmp/rasterly-release-draft; then
+            if [ "$(cat /tmp/rasterly-release-draft)" != true ]; then
+              echo 'This release is already public; refusing to replace published assets.' >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "Rasterly ${RELEASE_TAG#v}" --notes-file packaging/release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

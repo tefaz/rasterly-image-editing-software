@@ -1,0 +1,9 @@
+# Linux release environment: Python 3.12 on Ubuntu 22.04.
+# Qt wheels use manylinux_2_34, compatible with the glibc 2.35 build host.
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.2
+PyQt6-sip==13.12.0
+Pillow==12.3.0
+numpy==2.5.3
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8

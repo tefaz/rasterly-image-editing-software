@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Rasterly
+Comment=Lightweight raster image editor
+Exec=rasterly %f
+Icon=rasterly
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;
+MimeType=image/png;image/jpeg;image/webp;application/x-rasterly;
+StartupWMClass=Rasterly

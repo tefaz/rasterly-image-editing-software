@@ -1,5 +1,6 @@
 import argparse
 import sys
+from . import __version__
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import QApplication
 from .ui.style import STYLE
@@ -8,6 +9,7 @@ from .ui.window import EditorWindow
 
 def main():
     parser = argparse.ArgumentParser(description="Rasterly desktop image editor")
+    parser.add_argument("--version", action="version", version=f"Rasterly {__version__}")
     parser.add_argument("image", nargs="?", help="PNG, JPEG, WebP or .rasterly file to open")
     args = parser.parse_args()
     app = QApplication(sys.argv[:1])

@@ -13,6 +13,7 @@ from .history import HistoryDock
 from .dialogs import NewDialog, SizeDialog, FillDialog
 from .icons import icon
 from ..controller import EditorController
+from .. import __version__
 from ..clipboard import SelectionClipboard
 from ..model import Document
 from ..selection import Selection
@@ -114,7 +115,7 @@ class EditorWindow(QMainWindow):
         self.actions["history"].setText("History")
         self.layers.history_button.setDefaultAction(self.actions["history"])
         self.action("about", "About Rasterly", lambda: QMessageBox.about(self, "Rasterly",
-                    "<b>Rasterly 0.1</b><br>A focused desktop raster image editor.<br><br>"
+                    f"<b>Rasterly {__version__}</b><br>A focused desktop raster image editor.<br><br>"
                     "Full-resolution layers, local healing, and a little more room for your image."))
         self.tool_group = QActionGroup(self)
         for id, shortcut in [("move", "V"), ("rectangle", "M"), ("lasso", "L"), ("patch", "J")]:

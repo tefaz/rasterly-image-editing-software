@@ -6,9 +6,25 @@ A lightweight native raster image editor with a Photoshop-inspired dark workspac
 
 Rasterly supports layered PNG, JPEG, and WebP workflows, freeform and rectangular selections, healing, transforms, and a per-document history. It is designed to stay lightweight and focused rather than recreate a full professional editing suite.
 
-## Run
+## Linux downloads
 
-This workspace already has a working virtual environment:
+Download the installers from [GitHub Releases](https://github.com/tefaz/rasterly-image-editing-software/releases/latest):
+
+- **AppImage:** portable x86_64 Linux build. Includes Python, Qt, Pillow, and NumPy.
+- **Debian installer:** amd64 `.deb` for Ubuntu 22.04+, Debian 12+, and compatible distributions. Adds Rasterly to the applications menu and installs the `rasterly` command.
+
+```sh
+chmod +x Rasterly-0.1.0-x86_64.AppImage
+./Rasterly-0.1.0-x86_64.AppImage
+# Or, on Debian/Ubuntu:
+sudo apt install ./rasterly_0.1.0_amd64.deb
+```
+
+The AppImage is suitable for CachyOS and other recent Linux distributions. Both packages require x86_64 and glibc 2.35 or newer. If FUSE is unavailable, run the AppImage with `--appimage-extract-and-run`. The release also includes `SHA256SUMS`, a source archive, and a build manifest containing dependency versions and source links. These builds use the local NumPy healing engine.
+
+## Run from source
+
+With a virtual environment already installed:
 
 ```sh
 ./run.sh
@@ -96,7 +112,7 @@ If OpenCV is available, its [seamless cloning implementation](https://docs.openc
 .venv/bin/python -m pip install -e '.[opencv]'
 ```
 
-The current workspace uses the NumPy implementation because dependency downloads are unavailable. No cloud service or model download is needed. Healing, final transforms, and image resizing run on a background thread; interactive operations retain original pixel buffers throughout their previews.
+The standard Linux releases use the NumPy implementation. No cloud service or model download is needed. Healing, final transforms, and image resizing run on a background thread; interactive operations retain original pixel buffers throughout their previews.
 
 Local synthesis works best for small to medium objects surrounded by similar grass, sky, walls, or other repeating textures. It cannot infer missing semantic objects or complex perspective. Choosing a suitable source with the Patch Tool gives more control. Healing requires source material on the active layer; a completely selected image or an empty layer has no usable surrounding context. Very large selections take longer. Documents are limited to 100 megapixels and 32,768 pixels per dimension.
 
@@ -126,4 +142,23 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests -v
 
 The suite covers document operations, irregular selection masks, exact history restoration, file round trips and atomic-write failure, local fill/patch behavior, and actual Qt mouse/keyboard interactions. It also covers independent tabs and viewports, history navigation and branching, close/save/cancel behavior across multiple documents, clipboard transparency, pasting after the source tab is closed, rotation preview/commit consistency, Ctrl-click layer selection, and undoable merging.
 
-The current implementation passes 75 checks. The UI has been rendered and exercised using Qt's offscreen platform. This Codex sandbox denies connections to the desktop display (`wl_display: Operation not permitted`); launch `./run.sh` from your desktop terminal for the native window.
+The UI checks can run with Qt's offscreen platform. Release verification additionally launches the frozen application under Xvfb and exercises selections, editing, history, image formats, project save/open, and local healing. Both the installed `.deb` and AppImage are checked in Ubuntu 22.04, Debian 12, and Ubuntu 24.04 containers without a separate Python environment.
+
+## Building Linux releases
+
+The [Linux release workflow](.github/workflows/linux-release.yml) builds on Ubuntu 22.04 using Python 3.12 and the versions pinned in [packaging/requirements-linux.txt](packaging/requirements-linux.txt). Building on the older glibc baseline keeps the binaries compatible with newer Linux systems. See [PyInstaller's Linux portability guidance](https://pyinstaller.org/en/stable/usage.html#making-gnu-linux-apps-forward-compatible).
+
+The workflow runs packaging checks on `main`; a `v` tag matching the project version publishes the verified assets. AppImage build tools are checked against the digests in [packaging/appimage-tools.json](packaging/appimage-tools.json). For a manual build, install the Linux system dependencies listed in the workflow, then run:
+
+```sh
+python3.12 -m venv .venv-release
+.venv-release/bin/python -m pip install -r packaging/requirements-linux.txt
+.venv-release/bin/python -m pip install --no-deps .
+QT_QPA_PLATFORM=offscreen .venv-release/bin/python packaging/build_linux.py
+```
+
+The build produces the AppImage, Debian installer, source archive, dependency manifest, and checksums in `dist/`. Use Ubuntu 22.04 or an equivalent build container to preserve the documented compatibility baseline.
+
+## License
+
+Rasterly is released under [GNU GPL version 3](LICENSE). The binary packages include third-party notices and license copies. Unmodified Qt and other shared libraries remain separate files in the bundled runtime; their matching source locations are recorded in `BUILD-INFO.json`.
