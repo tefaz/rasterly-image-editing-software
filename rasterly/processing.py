@@ -218,7 +218,9 @@ def processing_region(doc, source_offset=None):
 def apply_processed(doc, region, result):
     from dataclasses import replace
     from .model import validate_size
+    from .operations import require_pixels
     layer = doc.active
+    require_pixels(layer)
     a, b, c, d = layer.bounds
     x1, y1, x2, y2 = region
     left, top, right, bottom = min(a, x1), min(b, y1), max(c, x2), max(d, y2)

@@ -40,10 +40,9 @@ QListWidget#historyList { background: #272a30; border: none; outline: none; }
 QListWidget#historyList::item { padding: 9px 8px; border-bottom: 1px solid #22252a; }
 QListWidget#historyList::item:selected { background: #3a4458; color: #f1f4fc; border-left: 2px solid #a7bbf7; }
 QWidget#layersPanel { background: #272a30; border-left: 1px solid #17191d; }
+QWidget#colorPanel { background: #272a30; border-left: 1px solid #17191d; border-bottom: 1px solid #17191d; }
 QWidget#panelHeader { background: #2d3037; border-bottom: 1px solid #1c1e23; }
 QWidget#panelFooter { background: #292c32; border-top: 1px solid #1c1e23; }
-QWidget#documentInfo { background: #272a30; border-top: 1px solid #1c1e23; }
-QLabel#infoDimensions { color: #e1e5ee; font-size: 17px; padding: 8px 0; }
 QListWidget#layerList { background: #272a30; border: none; outline: none; padding: 5px 0; }
 QListWidget#layerList::item { padding: 6px 8px; border-bottom: 1px solid #22252a; }
 QListWidget#layerList::item:selected { background: #3a4458; color: #f1f4fc; border-left: 2px solid #a7bbf7; }

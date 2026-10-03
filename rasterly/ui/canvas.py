@@ -1,9 +1,9 @@
 """Full-resolution layer rendering with independent viewport and tool previews."""
 import math
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient
 from PyQt6.QtWidgets import QWidget, QMenu
-from .images import qimage
+from .images import qimage, CHECKER_LIGHT, CHECKER_DARK
 from .icons import tool_cursor
 from ..tools import make_tools
 from ..tools.transform import TransformSession
@@ -16,6 +16,8 @@ class Canvas(QWidget):
     measurement_changed = pyqtSignal(str)
     transform_changed = pyqtSignal(bool)
     tool_changed = pyqtSignal(str)
+    text_changed = pyqtSignal(bool)
+    paint_settings_changed = pyqtSignal()
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -35,6 +37,9 @@ class Canvas(QWidget):
         self.measurement = None
         self.move_preview = None
         self.patch_offset = None
+        self.gradient_preview = None
+        self.stroke_preview = None
+        self.foreground_color = lambda: (0, 0, 0, 255)
         self.session = None
         self.last_mouse = QPointF(100, 100)
         self.images = {}
@@ -47,10 +52,10 @@ class Canvas(QWidget):
         self.timer.start(90)
         self.controller.changed.connect(self.document_changed)
         self.checker = QPixmap(16, 16)
-        self.checker.fill(QColor("#34363a"))
+        self.checker.fill(QColor(CHECKER_DARK))
         painter = QPainter(self.checker)
-        painter.fillRect(0, 0, 8, 8, QColor("#414348"))
-        painter.fillRect(8, 8, 8, 8, QColor("#414348"))
+        painter.fillRect(0, 0, 8, 8, QColor(CHECKER_LIGHT))
+        painter.fillRect(8, 8, 8, 8, QColor(CHECKER_LIGHT))
         painter.end()
 
     @property
@@ -75,6 +80,10 @@ class Canvas(QWidget):
                        max(0, min(self.document.height, round(point.y()))))
 
     def document_changed(self):
+        stroke = getattr(self.tools[self.tool_id], "stroke", None)
+        if stroke is not None and stroke.document is not self.document:
+            self.tools[self.tool_id].cancel()
+            self.dragging = False
         images = {id(layer.image) for layer in self.document.layers} if self.document else set()
         if self.session:
             images.add(id(self.session.target.image))
@@ -91,6 +100,9 @@ class Canvas(QWidget):
         self.update()
 
     def update_tool_cursor(self):
+        if self.controller.busy:
+            self.setCursor(Qt.CursorShape.BusyCursor)
+            return
         if self.session:
             return
         if self.panning:
@@ -99,6 +111,8 @@ class Canvas(QWidget):
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         elif self.tool_id == "move":
             self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif self.tool_id == "text":
+            self.setCursor(Qt.CursorShape.IBeamCursor)
         else:
             ready = False
             if self.tool_id == "patch" and self.document and not self.controller.busy:
@@ -114,6 +128,14 @@ class Canvas(QWidget):
         super().resizeEvent(event)
         self.viewport_changed.emit()
         self.update_tool_cursor()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
 
     def scroll_horizontal(self, offset):
         if not self.document:
@@ -132,6 +154,8 @@ class Canvas(QWidget):
 
     def set_tool(self, id):
         if self.controller.busy:
+            return
+        if self.tools["text"].editing and not self.tools["text"].commit():
             return
         if self.session:
             self.cancel_transform()
@@ -260,7 +284,20 @@ class Canvas(QWidget):
         for layer in self.document.layers:
             if not layer.visible:
                 continue
-            if layer.id == self.document.active_id and target:
+            if self.tools["text"].editing and layer.id == self.tools["text"].layer_id:
+                continue
+            if layer.id == self.document.active_id and self.stroke_preview:
+                painter.save()
+                unpainted = QPainterPath()
+                unpainted.addRect(QRectF(0, 0, self.document.width, self.document.height))
+                preview = self.stroke_preview
+                unpainted.addRect(QRectF(preview.x, preview.y, preview.image.width, preview.image.height))
+                unpainted.setFillRule(Qt.FillRule.OddEvenFill)
+                painter.setClipPath(unpainted, Qt.ClipOperation.IntersectClip)
+                self.draw_layer(painter, layer)
+                painter.restore()
+                self.draw_layer(painter, preview)
+            elif layer.id == self.document.active_id and target:
                 if target.selected:
                     self.draw_layer(painter, target.base)
                 if self.session:
@@ -272,6 +309,17 @@ class Canvas(QWidget):
                     self.draw_target(painter, target, QRectF(a + dx, b + dy, c - a, d - b))
             else:
                 self.draw_layer(painter, layer)
+            if layer.id == self.document.active_id and self.gradient_preview:
+                start, end, stops = self.gradient_preview
+                if start != end:
+                    painter.save()
+                    if self.document.selection:
+                        painter.setClipPath(self.path(self.document.selection), Qt.ClipOperation.IntersectClip)
+                    # Pillow samples integer coordinates; Qt samples pixel centers.
+                    gradient = QLinearGradient(start + QPointF(.5, .5), end + QPointF(.5, .5))
+                    gradient.setStops([(position, QColor(*color)) for position, color in stops])
+                    painter.fillRect(QRectF(0, 0, self.document.width, self.document.height), gradient)
+                    painter.restore()
         if self.patch_offset is not None and self.document.selection:
             dx, dy = self.patch_offset
             painter.save()
@@ -289,6 +337,14 @@ class Canvas(QWidget):
             dx, dy = self.patch_offset
             self.outline(painter, selection.translated(dx, dy), source=True)
         painter.restore()
+        if (self.tool_id in {"brush", "eraser"} and not self.session and not self.controller.busy
+                and not self.panning and not self.space_held and (self.underMouse() or self.dragging)):
+            radius = self.tools[self.tool_id].size * self.zoom / 2
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor("#111316"), 3))
+            painter.drawEllipse(self.last_mouse, radius, radius)
+            painter.setPen(QPen(QColor("white"), 1))
+            painter.drawEllipse(self.last_mouse, radius, radius)
         # Handles may lie beyond the image, so they use workspace clipping.
         if self.session:
             painter.save()
@@ -352,6 +408,8 @@ class Canvas(QWidget):
     def begin_transform(self):
         if self.controller.busy or self.session or not self.document:
             return
+        if self.tools["text"].editing and not self.tools["text"].commit():
+            return
         self.cancel_interaction()
         try:
             self.session = TransformSession.begin(self.document)
@@ -365,8 +423,9 @@ class Canvas(QWidget):
         if not self.session:
             return
         session = self.session
+        from ..text import render_text
         operation = lambda doc: transform(doc, session.target, session.pixel_box, session.flip_x,
-                                         session.flip_y, session.quarter_turns)
+                                         session.flip_y, session.quarter_turns, text_renderer=render_text)
         self.session = None
         self.transform_changed.emit(False)
         self.controller.run_background("Free Transform", operation)
@@ -385,11 +444,11 @@ class Canvas(QWidget):
         self.document_changed()
 
     def start_pending_selection(self, point, event):
-        """Start an outside drag at its first intersection with the image frame."""
-        start = self.pending_selection
-        if start is None:
+        """Wait for image entry, retaining the original rectangle press anchor."""
+        if self.pending_selection is None:
             return True
-        self.pending_selection = QPointF(point)
+        anchor, start = self.pending_selection
+        self.pending_selection = (anchor, QPointF(point))
         first, last = 0.0, 1.0
         for origin, delta, extent in (
             (start.x(), point.x() - start.x(), self.document.width),
@@ -405,7 +464,10 @@ class Canvas(QWidget):
                 return False
         entry = start + (point - start) * first
         self.pending_selection = None
-        self.tools[self.tool_id].enter(entry, event)
+        # A rectangle spans the original press and the current pointer. Using
+        # its entry point instead can lose a strip when a corner drag crosses
+        # a different image edge. Freeform outlines still follow their path.
+        self.tools[self.tool_id].enter(anchor if self.tool_id == "rectangle" else entry, event)
         return True
 
     def mousePressEvent(self, event):
@@ -431,9 +493,10 @@ class Canvas(QWidget):
             else:
                 self.dragging = False
             return
-        if not QRectF(0, 0, self.document.width, self.document.height).contains(point):
+        if (not QRectF(0, 0, self.document.width, self.document.height).contains(point)
+                and self.tool_id not in {"brush", "eraser"}):
             if self.tool_id in {"rectangle", "lasso", "patch"}:
-                self.pending_selection = QPointF(point)
+                self.pending_selection = (QPointF(point), QPointF(point))
             else:
                 self.dragging = False
             return
@@ -478,6 +541,8 @@ class Canvas(QWidget):
                 self.controller.error.emit(str(error))
 
         self.update_tool_cursor()
+        if self.tool_id in {"brush", "eraser"}:
+            self.update()
 
     def mouseReleaseEvent(self, event):
         if self.panning:
@@ -518,7 +583,21 @@ class Canvas(QWidget):
             self.update()
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+        if (event.key() in (Qt.Key.Key_BracketLeft, Qt.Key.Key_BracketRight)
+                and self.tool_id in {"brush", "eraser"} and not self.controller.busy):
+            tool = self.tools[self.tool_id]
+            growing = event.key() == Qt.Key.Key_BracketRight
+            value = max(tool.size + 1, round(tool.size * 1.25)) if growing else min(tool.size - 1, round(tool.size * .8))
+            tool.size = max(1, min(2048, value))
+            self.paint_settings_changed.emit()
+            self.update()
+            event.accept()
+        elif event.key() == Qt.Key.Key_Escape and self.tools["text"].editing:
+            self.tools["text"].cancel()
+        elif (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.tools["text"].editing
+              and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self.tools["text"].commit()
+        elif event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
             self.space_held = True
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             event.accept()

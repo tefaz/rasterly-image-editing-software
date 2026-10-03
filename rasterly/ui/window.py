@@ -2,20 +2,25 @@ from dataclasses import replace
 import math
 from pathlib import Path
 from PyQt6.QtCore import Qt, QTimer, QSize, QPointF
-from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QIcon
+from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QIcon, QColor, QFont
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                             QToolButton, QSplitter, QFileDialog, QMessageBox, QDialog,
                             QDoubleSpinBox, QPushButton, QProgressBar, QComboBox,
-                            QLineEdit, QAbstractSpinBox, QApplication, QSizePolicy, QTabBar, QScrollBar)
+                            QLineEdit, QAbstractSpinBox, QApplication, QSizePolicy, QTabBar, QScrollBar,
+                            QSpinBox, QColorDialog, QTextEdit, QMenu)
 from .canvas import Canvas
 from .layers import LayersPanel
 from .history import HistoryDock
 from .dialogs import NewDialog, SizeDialog, FillDialog
 from .icons import icon
+from .fonts import FontPicker
+from .colors import ColorPanel
+from .gradient import GradientEditor
 from ..controller import EditorController
 from .. import __version__
 from ..clipboard import SelectionClipboard
 from ..model import Document
+from ..model import TextData
 from ..selection import Selection
 from .. import operations, files
 
@@ -36,7 +41,10 @@ class EditorWindow(QMainWindow):
         self.actions = {}
         self.tool_buttons = {}
         self.canvas = Canvas(self.controller)
+        self.colors = ColorPanel()
+        self.canvas.foreground_color = lambda: self.colors.color.getRgb()
         self.layers = LayersPanel(self.controller)
+        self.layers.selection_changed.connect(self.refresh)
         self.clipboard = SelectionClipboard(self)
         self.history_dock = HistoryDock(self.controller, self.jump_history, self)
         self.create_actions()
@@ -53,6 +61,10 @@ class EditorWindow(QMainWindow):
         self.clipboard.changed.connect(self.refresh)
         self.canvas.tool_changed.connect(self.tool_changed)
         self.canvas.transform_changed.connect(self.transform_changed)
+        self.canvas.text_changed.connect(self.text_changed)
+        self.canvas.paint_settings_changed.connect(self.sync_paint_controls)
+        self.layers.edit_text_requested.connect(self.edit_text_layer)
+        self.colors.color_changed.connect(self.foreground_color_changed)
         self.canvas.zoom_changed.connect(self.zoom_changed)
         self.canvas.viewport_changed.connect(self.sync_horizontal_scrollbar)
         self.canvas.measurement_changed.connect(lambda text: self.statusBar().showMessage(text, 1500))
@@ -89,19 +101,26 @@ class EditorWindow(QMainWindow):
         self.action("redo", "Redo", self.redo, "Ctrl+Shift+Z")
         self.action("copy", "Copy Selection", self.copy_selection, "Ctrl+C")
         self.action("paste", "Paste as New Layer", self.paste_selection, "Ctrl+V")
+        self.action("clear", "Clear Selection", lambda:
+                    self.apply("Clear selection", operations.clear_selection), "Delete")
         self.action("fill", "Fill Selection…", self.fill, "Shift+F5", "fill")
         self.action("transform", "Free Transform", self.canvas.begin_transform, "Ctrl+T", "transform")
         self.action("crop", "Crop to Selection", lambda: self.apply("Crop", operations.crop), None, "crop")
         self.action("size", "Image Size / Canvas Size…", self.resize_document, "Ctrl+Alt+I", "size")
+        self.action("info", "Document Info…", self.show_document_info)
         self.action("layer_new", "New Layer", lambda: self.apply("New layer", operations.add_layer), "Ctrl+Shift+N")
-        self.action("layer_duplicate", "Duplicate Layer", lambda: self.apply("Duplicate layer", operations.duplicate_layer), "Ctrl+J")
-        self.action("layer_delete", "Delete Layer", lambda: self.apply("Delete layer", operations.delete_layer))
-        self.action("layer_rename", "Rename Layer…", self.layers.rename)
+        self.action("layer_duplicate", "Duplicate Layer / Group", self.layers.duplicate, "Ctrl+J")
+        self.action("layer_delete", "Delete Layer / Group", self.layers.delete)
+        self.action("layer_rename", "Rename Layer / Group…", self.layers.rename)
+        self.action("layer_group", "Group Layers", self.group_layers, "Ctrl+G")
         self.action("layer_merge", "Merge Layers", lambda: self.apply("Merge layers", operations.merge_layers), "Ctrl+E")
         self.action("layer_up", "Move Layer Up", lambda: self.layers.shift(1))
         self.action("layer_down", "Move Layer Down", lambda: self.layers.shift(-1))
         self.action("layer_visibility", "Show / Hide Layer", lambda: self.apply("Layer visibility", lambda doc:
                     doc.with_layer(replace(doc.active, visible=not doc.active.visible))))
+        self.action("layer_edit_text", "Edit Text Layer", self.edit_text_layer)
+        self.action("layer_rasterize_text", "Rasterize Text Layer", lambda:
+                    self.apply("Rasterize text", operations.rasterize_text))
         self.action("select_all", "Select All", lambda: self.change_selection(
             Selection.rectangle(0, 0, self.controller.document.width, self.controller.document.height),
             "Select all"), "Ctrl+A")
@@ -118,7 +137,9 @@ class EditorWindow(QMainWindow):
                     f"<b>Rasterly {__version__}</b><br>A focused desktop raster image editor.<br><br>"
                     "Full-resolution layers, local healing, and a little more room for your image."))
         self.tool_group = QActionGroup(self)
-        for id, shortcut in [("move", "V"), ("rectangle", "M"), ("lasso", "L"), ("patch", "J")]:
+        for id, shortcut in [("move", "V"), ("rectangle", "M"), ("lasso", "L"), ("patch", "J"),
+                             ("brush", "B"), ("eraser", "E"), ("text", "T"),
+                             ("bucket", "G"), ("gradient", "Shift+G")]:
             tool = self.canvas.tools[id]
             action = self.action("tool_" + id, tool.name, lambda id=id: self.canvas.set_tool(id), shortcut, id)
             action.setCheckable(True)
@@ -129,10 +150,10 @@ class EditorWindow(QMainWindow):
     def create_menus(self):
         groups = [
             ("File", ["new", "open", None, "save", "save_as", "export", None, "close_tab", "quit"]),
-            ("Edit", ["undo", "step_backward", "redo", None, "copy", "paste", None, "fill", "transform"]),
-            ("Image", ["crop", "size"]),
-            ("Layer", ["layer_new", "layer_duplicate", "layer_delete", "layer_rename", "layer_merge", None,
-                       "layer_up", "layer_down", "layer_visibility"]),
+            ("Edit", ["undo", "step_backward", "redo", None, "copy", "paste", "clear", None, "fill", "transform"]),
+            ("Image", ["crop", "size", None, "info"]),
+            ("Layer", ["layer_new", "layer_duplicate", "layer_delete", "layer_rename", "layer_group", "layer_merge", None,
+                       "layer_up", "layer_down", "layer_visibility", None, "layer_edit_text", "layer_rasterize_text"]),
             ("Select", ["tool_rectangle", "tool_lasso", None, "select_all", "deselect"]),
             ("View", ["fit", "actual", "zoom_in", "zoom_out", None, "history"]),
             ("Help", ["shortcuts", "about"]),
@@ -186,6 +207,57 @@ class EditorWindow(QMainWindow):
         controls.addWidget(cancel)
         options.addWidget(self.transform_controls)
         self.transform_controls.hide()
+        self.create_text_controls(options)
+        self.fill_controls = QWidget()
+        fill_controls = QHBoxLayout(self.fill_controls)
+        fill_controls.setContentsMargins(0, 0, 0, 0)
+        fill_controls.setSpacing(6)
+        self.tolerance_label = QLabel("Tolerance")
+        self.bucket_tolerance = QSpinBox()
+        self.bucket_tolerance.setRange(0, 255)
+        self.bucket_tolerance.setValue(self.canvas.tools["bucket"].tolerance)
+        self.bucket_tolerance.setFixedWidth(70)
+        self.bucket_tolerance.setToolTip("Allowed color difference from the clicked pixel (0 = exact match)")
+        self.bucket_tolerance.valueChanged.connect(lambda value:
+            setattr(self.canvas.tools["bucket"], "tolerance", value))
+        self.gradient_mode = QComboBox()
+        self.gradient_mode.addItems(["Foreground → White", "Foreground → Transparent", "Custom"])
+        self.gradient_mode.setFixedWidth(195)
+        arrow = Path(__file__).resolve().parents[1] / "resources" / "chevron-down.svg"
+        self.gradient_mode.setStyleSheet(
+            f'QComboBox::down-arrow {{ image: url("{arrow.as_posix()}"); width: 10px; height: 6px; }}')
+        self.gradient_mode.setToolTip("Choose a preset to reset the gradient, or edit the color stops")
+        self.gradient_mode.currentIndexChanged.connect(self.gradient_preset_changed)
+        self.gradient_editor = GradientEditor()
+        self.gradient_editor.stops_changed.connect(self.gradient_stops_changed)
+        self.gradient_editor.set_preset(0, self.colors.color)
+        fill_controls.addWidget(self.tolerance_label)
+        fill_controls.addWidget(self.bucket_tolerance)
+        fill_controls.addWidget(self.gradient_editor)
+        fill_controls.addWidget(self.gradient_mode)
+        options.addWidget(self.fill_controls)
+        self.fill_controls.hide()
+        self.paint_controls = QWidget()
+        paint_controls = QHBoxLayout(self.paint_controls)
+        paint_controls.setContentsMargins(0, 0, 0, 0)
+        paint_controls.setSpacing(6)
+        self.paint_spins = {}
+        for name, label, minimum, maximum, value, suffix in (
+                ("size", "Size", 1, 2048, 24, " px"),
+                ("opacity", "Opacity", 0, 100, 100, "%"),
+                ("hardness", "Hardness", 0, 100, 100, "%")):
+            spin = QSpinBox()
+            spin.setRange(minimum, maximum)
+            spin.setValue(value)
+            spin.setSuffix(suffix)
+            spin.setFixedWidth(85)
+            spin.setAccessibleName(f"Brush / eraser {label.lower()}")
+            spin.valueChanged.connect(lambda amount, name=name: self.paint_setting_changed(name, amount))
+            self.paint_spins[name] = spin
+            paint_controls.addWidget(QLabel(label))
+            paint_controls.addWidget(spin)
+        options.addWidget(self.paint_controls)
+        self.paint_controls.hide()
         self.quick_controls = QWidget()
         quick = QHBoxLayout(self.quick_controls)
         quick.setContentsMargins(0, 0, 0, 0)
@@ -206,20 +278,27 @@ class EditorWindow(QMainWindow):
         toolbar = QVBoxLayout(self.toolbar)
         toolbar.setContentsMargins(6, 12, 6, 12)
         toolbar.setSpacing(7)
-        for id in ("move", "rectangle", "lasso", "patch"):
+        for id in ("move", "rectangle", "lasso", "patch", "brush", "eraser", "text"):
             button = QToolButton()
             button.setDefaultAction(self.actions["tool_" + id])
             button.setIconSize(QSize(22, 22))
             button.setFixedSize(38, 38)
             toolbar.addWidget(button)
             self.tool_buttons[id] = button
-        toolbar.addSpacing(12)
-        for id in ("crop", "transform"):
-            button = QToolButton()
-            button.setDefaultAction(self.actions[id])
-            button.setIconSize(QSize(22, 22))
-            button.setFixedSize(38, 38)
-            toolbar.addWidget(button)
+        self.fill_tool_button = QToolButton()
+        self.fill_tool_button.setObjectName("fillToolButton")
+        self.fill_tool_button.setStyleSheet("QToolButton { toolbutton-popup-delay: 400; }")
+        self.fill_tool_button.setPopupMode(QToolButton.ToolButtonPopupMode.DelayedPopup)
+        self.fill_tool_menu = QMenu(self.fill_tool_button)
+        for id in ("bucket", "gradient"):
+            self.fill_tool_menu.addAction(self.actions["tool_" + id])
+            self.tool_buttons[id] = self.fill_tool_button
+        self.fill_tool_button.setMenu(self.fill_tool_menu)
+        self.fill_tool_button.setDefaultAction(self.actions["tool_bucket"])
+        self.fill_tool_button.setIconSize(QSize(22, 22))
+        self.fill_tool_button.setFixedSize(38, 38)
+        self.fill_tool_button.setToolTip("Paint Bucket / Gradient · Hold left-click to choose a tool")
+        toolbar.addWidget(self.fill_tool_button)
         toolbar.addStretch()
         fit = QToolButton()
         fit.setDefaultAction(self.actions["fit"])
@@ -258,7 +337,15 @@ class EditorWindow(QMainWindow):
         workspace_layout.addWidget(self.horizontal_scrollbar)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(workspace)
-        splitter.addWidget(self.layers)
+        self.sidebar = QWidget()
+        self.sidebar.setMinimumWidth(220)
+        self.sidebar.setMaximumWidth(340)
+        sidebar = QVBoxLayout(self.sidebar)
+        sidebar.setContentsMargins(0, 0, 0, 0)
+        sidebar.setSpacing(0)
+        sidebar.addWidget(self.colors)
+        sidebar.addWidget(self.layers, 1)
+        splitter.addWidget(self.sidebar)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         splitter.setSizes([1050, 260])
@@ -271,6 +358,129 @@ class EditorWindow(QMainWindow):
         self.progress.hide()
         root.addWidget(self.progress)
         self.setCentralWidget(central)
+
+    def create_text_controls(self, options):
+        self.text_controls = QWidget()
+        controls = QHBoxLayout(self.text_controls)
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(5)
+        self.text_font = FontPicker()
+        self.text_font.setCurrentFont(QFont("Sans Serif"))
+        self.text_font.setFixedWidth(145)
+        self.text_size = QSpinBox()
+        self.text_size.setRange(1, 2048)
+        self.text_size.setValue(48)
+        self.text_size.setSuffix(" px")
+        self.text_size.setFixedWidth(92)
+        self.text_size.setToolTip("Font size in document pixels")
+        controls.addWidget(self.text_font)
+        controls.addWidget(self.text_size)
+        self.text_bold, self.text_italic = QToolButton(), QToolButton()
+        for button, label, hint in [(self.text_bold, "B", "Bold"), (self.text_italic, "I", "Italic")]:
+            button.setText(label)
+            button.setCheckable(True)
+            button.setToolTip(hint)
+            button.setFixedSize(28, 30)
+            button.toggled.connect(self.text_style_changed)
+            controls.addWidget(button)
+        self.text_color = QColor("black")
+        self.text_color_button = QPushButton("Color")
+        self.text_color_button.setFixedWidth(60)
+        self.text_color_button.clicked.connect(self.choose_text_color)
+        controls.addWidget(self.text_color_button)
+        self.text_alignment = QComboBox()
+        self.text_alignment.addItems(["Left", "Center", "Right"])
+        self.text_alignment.setFixedWidth(88)
+        self.text_alignment.setToolTip("Multiline alignment")
+        controls.addWidget(self.text_alignment)
+        self.text_apply = QPushButton("Apply")
+        self.text_apply.setObjectName("primary")
+        self.text_apply.clicked.connect(self.canvas.tools["text"].commit)
+        self.text_cancel = QPushButton("Cancel")
+        self.text_cancel.clicked.connect(self.canvas.tools["text"].cancel)
+        controls.addWidget(self.text_apply)
+        controls.addWidget(self.text_cancel)
+        self.text_font.currentFontChanged.connect(self.text_style_changed)
+        self.text_size.valueChanged.connect(self.text_style_changed)
+        self.text_alignment.currentIndexChanged.connect(self.text_style_changed)
+        options.addWidget(self.text_controls)
+        self.text_controls.hide()
+        self.sync_text_controls(self.canvas.tools["text"].defaults)
+
+    def sync_text_controls(self, data):
+        widgets = (self.text_font, self.text_size, self.text_bold, self.text_italic, self.text_alignment)
+        for widget in widgets:
+            widget.blockSignals(True)
+        self.text_font.setCurrentFont(QFont(data.family))
+        self.text_size.setValue(data.size)
+        self.text_bold.setChecked(data.bold)
+        self.text_italic.setChecked(data.italic)
+        self.text_alignment.setCurrentText(data.alignment.title())
+        self.text_color = QColor(*data.color)
+        self.colors.set_color(self.text_color, emit=False)
+        if hasattr(self, "gradient_editor"):
+            self.gradient_editor.update_foreground(self.text_color)
+        self.text_color_button.setStyleSheet(f"border-bottom: 3px solid {self.text_color.name()};")
+        for widget in widgets:
+            widget.blockSignals(False)
+
+    def text_style_changed(self, *args):
+        self.colors.set_color(self.text_color, emit=False)
+        self.gradient_editor.update_foreground(self.text_color)
+        data = TextData(family=self.text_font.currentFont().family(), size=self.text_size.value(),
+                        color=self.text_color.getRgb(), bold=self.text_bold.isChecked(),
+                        italic=self.text_italic.isChecked(), alignment=self.text_alignment.currentText().lower())
+        self.canvas.tools["text"].set_style(data)
+
+    def choose_text_color(self):
+        color = QColorDialog.getColor(self.text_color, self, "Text color")
+        if color.isValid():
+            self.colors.set_color(color)
+
+    def foreground_color_changed(self, color):
+        self.text_color = QColor(color)
+        self.text_color_button.setStyleSheet(f"border-bottom: 3px solid {color.name()};")
+        self.text_style_changed()
+
+    def gradient_preset_changed(self, index):
+        if index in (0, 1):
+            self.canvas.tools["gradient"].transparent = index == 1
+            self.gradient_editor.set_preset(index, self.colors.color)
+        else:
+            self.gradient_editor.emit_stops()
+
+    def gradient_stops_changed(self, stops):
+        self.canvas.tools["gradient"].stops = stops
+        self.gradient_mode.blockSignals(True)
+        self.gradient_mode.setCurrentIndex(2 if self.gradient_editor.preset is None else self.gradient_editor.preset)
+        self.gradient_mode.blockSignals(False)
+
+    def sync_paint_controls(self):
+        if self.canvas.tool_id not in {"brush", "eraser"}:
+            return
+        tool = self.canvas.tools[self.canvas.tool_id]
+        for name, spin in self.paint_spins.items():
+            spin.blockSignals(True)
+            spin.setValue(getattr(tool, name))
+            spin.blockSignals(False)
+
+    def paint_setting_changed(self, name, amount):
+        if self.canvas.tool_id in {"brush", "eraser"}:
+            setattr(self.canvas.tools[self.canvas.tool_id], name, amount)
+            self.canvas.update()
+
+    def edit_text_layer(self):
+        doc = self.controller.document
+        if doc and doc.active.text is not None and doc.active.visible:
+            self.canvas.set_tool("text")
+            self.canvas.tools["text"].begin(layer=doc.active)
+
+    def text_changed(self, editing):
+        tool = self.canvas.tools["text"]
+        self.sync_text_controls(tool.data if editing else tool.defaults)
+        self.text_apply.setEnabled(editing)
+        self.text_cancel.setEnabled(editing)
+        self.refresh()
 
     def create_statusbar(self):
         self.zoom_control = QComboBox()
@@ -333,17 +543,19 @@ class EditorWindow(QMainWindow):
         self.tab_bar.blockSignals(False)
         self.tab_bar.setEnabled(not self.controller.busy)
         self.status_dimensions.setText(f"  {doc.width:,} × {doc.height:,} px" if doc else "")
-        free = doc is not None and not self.controller.busy and not self.canvas.session
+        typing = self.canvas.tools["text"].editing
+        free = doc is not None and not self.controller.busy and not self.canvas.session and not typing
         always = {"about", "shortcuts", "quit", "history"}
         opening = {"new", "open"}
-        view = {"fit", "actual", "zoom_in", "zoom_out"}
+        view = {"fit", "actual", "zoom_in", "zoom_out", "info"}
         for id, action in self.actions.items():
-            action.setEnabled(id in always or free or (id in opening and not self.controller.busy and not self.canvas.session)
-                              or (doc is not None and id in view and not self.controller.busy))
+            action.setEnabled(id in always or free or (id in opening and not self.controller.busy and not self.canvas.session and not typing)
+                              or (doc is not None and (id in view or id.startswith("tool_")) and not self.controller.busy))
         selected = bool(doc and doc.selection and doc.selection.valid)
-        for id in ("crop", "fill", "deselect", "copy"):
+        for id in ("crop", "fill", "deselect", "copy", "clear"):
             self.actions[id].setEnabled(free and selected)
         self.actions["paste"].setEnabled(free and self.clipboard.has_image)
+        self.actions["transform"].setEnabled(free or typing)
         self.actions["close_tab"].setEnabled(doc is not None and not self.controller.busy)
         self.actions["undo"].setEnabled(free and self.controller.history.can_toggle)
         self.actions["step_backward"].setEnabled(free and bool(self.controller.history.undo_stack))
@@ -352,8 +564,11 @@ class EditorWindow(QMainWindow):
         if self.controller.history.toggle_redo:
             self.actions["undo"].setText("Redo " + self.controller.history.redo_stack[-1].label)
         self.actions["redo"].setText("Redo " + self.controller.history.redo_stack[-1].label if self.controller.history.redo_stack else "Redo")
-        self.actions["layer_delete"].setEnabled(free and len(doc.layers) > 1 if doc else False)
+        self.actions["layer_delete"].setEnabled(free and self.layers.can_delete())
+        self.actions["layer_group"].setEnabled(bool(free and len(doc.selected_ids) > 1) if doc else False)
         self.actions["layer_merge"].setEnabled(free and len(doc.selected_ids) > 1 if doc else False)
+        self.actions["layer_edit_text"].setEnabled(bool(free and doc.active.text and doc.active.visible) if doc else False)
+        self.actions["layer_rasterize_text"].setEnabled(bool(free and doc.active.text) if doc else False)
         self.layers.setEnabled(free)
         self.layers.history_button.setEnabled(True)
         self.history_dock.list.setEnabled(free)
@@ -450,13 +665,38 @@ class EditorWindow(QMainWindow):
     def tool_changed(self, id):
         tool = self.canvas.tools[id]
         self.tool_label.setText(tool.name)
+        self.tool_label.setToolTip(tool.hint)
         self.hint_label.setText(tool.hint)
         self.actions["tool_" + id].setChecked(True)
+        if id in {"bucket", "gradient"}:
+            self.fill_tool_button.setDefaultAction(self.actions["tool_" + id])
+            self.fill_tool_button.setToolTip(f"{tool.name} · Hold left-click to choose Paint Bucket / Gradient")
+        self.fill_controls.setVisible(id in {"bucket", "gradient"} and not self.canvas.session)
+        self.paint_controls.setVisible(id in {"brush", "eraser"} and not self.canvas.session)
+        self.sync_paint_controls()
+        self.tolerance_label.setVisible(id == "bucket")
+        self.bucket_tolerance.setVisible(id == "bucket")
+        self.gradient_mode.setVisible(id == "gradient")
+        self.gradient_editor.setVisible(id == "gradient")
+        if id == "gradient":
+            self.gradient_editor.update_foreground(self.colors.color)
+        text = id == "text"
+        self.text_controls.setVisible(text)
+        self.text_apply.setEnabled(self.canvas.tools["text"].editing)
+        self.text_cancel.setEnabled(self.canvas.tools["text"].editing)
+        self.hint_label.setVisible(not text)
+        self.quick_controls.setVisible(not text and not self.canvas.session)
+        if text:
+            self.sync_text_controls(self.canvas.tools["text"].defaults)
 
     def transform_changed(self, active):
         self.transform_controls.setVisible(active)
         self.quick_controls.setVisible(not active)
         if active:
+            self.text_controls.hide()
+            self.fill_controls.hide()
+            self.paint_controls.hide()
+            self.hint_label.show()
             self.tool_label.setText("Free Transform")
             self.hint_label.setText("Shift: lock ratio · Right-click: flip / rotate · Enter / Esc")
             for spin, value in [(self.transform_width, self.canvas.session.box.width()),
@@ -494,20 +734,50 @@ class EditorWindow(QMainWindow):
             self.zoom_changed(self.canvas.zoom)
 
     def focus_changed(self, old, new):
-        typing = isinstance(new, (QLineEdit, QAbstractSpinBox, QComboBox))
-        for id, shortcut in [("move", "V"), ("rectangle", "M"), ("lasso", "L"), ("patch", "J")]:
+        typing = False
+        editing_stops = False
+        widget = new
+        while widget is not None:
+            if isinstance(widget, GradientEditor):
+                editing_stops = True
+            if isinstance(widget, (QLineEdit, QAbstractSpinBox, QComboBox, QTextEdit)):
+                typing = True
+                break
+            widget = widget.parentWidget()
+        for id, shortcut in [("move", "V"), ("rectangle", "M"), ("lasso", "L"), ("patch", "J"),
+                             ("brush", "B"), ("eraser", "E"), ("text", "T"),
+                             ("bucket", "G"), ("gradient", "Shift+G")]:
             self.actions["tool_" + id].setShortcut(QKeySequence() if typing else QKeySequence(shortcut))
+        self.actions["clear"].setShortcut(QKeySequence() if typing or editing_stops else QKeySequence("Delete"))
+        self.actions["layer_group"].setShortcut(QKeySequence() if typing else QKeySequence("Ctrl+G"))
 
     def busy_changed(self, busy, label):
         self.processing_label.setText(label + "…" if busy else "")
         self.progress.setVisible(busy)
         self.options.setEnabled(not busy)
-        self.canvas.setCursor(Qt.CursorShape.BusyCursor if busy else
-                              Qt.CursorShape.SizeAllCursor if self.canvas.tool_id == "move" else Qt.CursorShape.CrossCursor)
+        if busy:
+            self.canvas.setCursor(Qt.CursorShape.BusyCursor)
+        else:
+            self.canvas.update_tool_cursor()
         self.refresh()
 
     def show_error(self, message):
         QMessageBox.warning(self, "Rasterly", message)
+
+    def show_document_info(self):
+        doc = self.controller.document
+        if doc is None:
+            return
+        selection = "No selection"
+        if doc.selection and doc.selection.valid:
+            left, top, right, bottom = doc.selection.bounds
+            selection = f"{right - left:,} × {bottom - top:,} px"
+        QMessageBox.information(self, "Document Info",
+            f"Dimensions: {doc.width:,} × {doc.height:,} px\n"
+            "Color mode: RGB · 8-bit\n"
+            "Transparency: supported\n"
+            f"Layers: {len(doc.layers)}\n"
+            f"Selection: {selection}")
 
     def confirm_unsaved(self):
         if not self.controller.dirty:
@@ -555,11 +825,11 @@ class EditorWindow(QMainWindow):
             return False
         path = self.controller.path
         doc = self.controller.document
-        if save_as or not path or (len(doc.layers) > 1 and Path(path).suffix.lower() != files.PROJECT_SUFFIX):
+        if save_as or not path or ((len(doc.layers) > 1 or doc.groups) and Path(path).suffix.lower() != files.PROJECT_SUFFIX):
             path = self.choose_output()
         if not path:
             return False
-        layered_raster = len(doc.layers) > 1 and Path(path).suffix.lower() != files.PROJECT_SUFFIX
+        layered_raster = (len(doc.layers) > 1 or bool(doc.groups)) and Path(path).suffix.lower() != files.PROJECT_SUFFIX
         if layered_raster:
             answer = QMessageBox.question(self, "Save flattened image?",
                     "PNG, JPEG and WebP store the visible composite. Layers are kept in this session, "
@@ -593,11 +863,12 @@ class EditorWindow(QMainWindow):
 
     def fill(self):
         self.canvas.cancel_interaction()
-        dialog = FillDialog(self)
+        dialog = FillDialog(self, color=self.colors.color)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             if dialog.mode.currentIndex() == 0:
                 self.controller.heal()
             else:
+                self.colors.set_color(dialog.color)
                 color = dialog.color.getRgb()
                 self.apply("Solid Color Fill", lambda doc: operations.solid_fill(doc, color))
 
@@ -624,16 +895,24 @@ class EditorWindow(QMainWindow):
         self.canvas.cancel_interaction()
         self.controller.redo()
 
+    def group_layers(self):
+        self.canvas.cancel_interaction()
+        self.layers.group_selected()
+
     def show_shortcuts(self):
         QMessageBox.information(self, "Keyboard shortcuts",
-            "V — Move\nM — Rectangle selection\nL — Lasso\nJ — Patch\n\n"
+            "V — Move\nM — Rectangle selection\nL — Lasso\nJ — Patch\n"
+            "B — Brush\nE — Eraser\n[ / ] — Brush / eraser size\nT — Type\n\n"
+            "G — Paint Bucket\nShift+G — Gradient\nGradient: Shift — Constrain angle\n\n"
+            "While typing: Enter — New line\nCtrl+Enter — Apply text\nEscape — Cancel text\n\n"
             "Rectangle / Lasso: Shift + drag — Add to selection\n"
             "Rectangle / Lasso: Left Alt + drag — Subtract from selection\n\n"
             "Ctrl+N — New image\nCtrl+O — Open\nCtrl+S — Save\nCtrl+Shift+S — Save As\n"
             "Ctrl+Alt+S — Export\n\nCtrl+T — Free Transform\nShift+F5 — Fill selection\n"
             "Ctrl+W — Close tab\nCtrl+C — Copy selection\nCtrl+V — Paste as new layer\n\n"
+            "Delete — Clear selected pixels on the active layer\n\n"
             "Ctrl+D — Deselect\nCtrl+A — Select all\nCtrl+Alt+I — Image / Canvas Size\n"
-            "Ctrl+Shift+N — New layer\nCtrl+J — Duplicate layer\nCtrl+E — Merge selected layers\n\n"
+            "Ctrl+Shift+N — New layer\nCtrl+J — Duplicate layer / group\nCtrl+G — Group selected layers\nCtrl+E — Merge selected layers\n\n"
             "Ctrl+Z — Toggle last history step\nCtrl+Alt+Z — Step backward\n"
             "Ctrl+Shift+Z — Redo\nCtrl+0 — Fit image\nCtrl+1 — Actual pixels\n"
             "Space + drag / middle mouse — Pan\nCtrl + scroll — Zoom\n\n"

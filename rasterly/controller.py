@@ -230,6 +230,9 @@ class EditorController(QObject):
         if not self.document.active.visible:
             self.error.emit("Show the active layer before healing it.")
             return
+        if self.document.active.text is not None:
+            self.error.emit("Use Layer → Rasterize Text Layer before healing this layer.")
+            return
         def operation(doc):
             region, image, mask, source = processing_region(doc, source_offset)
             result = self.engine.process(image, mask, source)

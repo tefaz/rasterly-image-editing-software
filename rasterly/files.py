@@ -6,7 +6,8 @@ from pathlib import Path
 import tempfile
 import zipfile
 from PIL import Image
-from .model import Document, Layer, composite, validate_size
+from dataclasses import asdict
+from .model import Document, Layer, LayerGroup, TextData, composite, validate_size
 
 PROJECT_SUFFIX = ".rasterly"
 RASTER_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -20,7 +21,7 @@ def open_document(path):
             if info.file_size > 1_000_000:
                 raise ValueError("Invalid project manifest.")
             metadata = json.loads(archive.read(info))
-            if metadata.get("format") != "rasterly" or metadata.get("version") != 1:
+            if metadata.get("format") != "rasterly" or metadata.get("version") not in (1, 2):
                 raise ValueError("Unsupported Rasterly project version.")
             width, height = int(metadata["width"]), int(metadata["height"])
             validate_size(width, height)
@@ -40,12 +41,19 @@ def open_document(path):
                     raise ValueError("Duplicate layer identifiers.")
                 ids.add(id)
                 layers.append(Layer(str(entry["name"]), pixels, int(entry["x"]), int(entry["y"]),
-                                    bool(entry["visible"]), id))
+                                    bool(entry["visible"]), id,
+                                    TextData(**entry["text"]) if entry.get("text") is not None else None,
+                                    str(entry["group_id"]) if entry.get("group_id") is not None else None))
             active = metadata.get("active_id", layers[-1].id)
             if active not in ids:
                 active = layers[-1].id
             selected = frozenset(metadata.get("selected_ids", [active]))
-            return Document(width, height, tuple(layers), active, selected_ids=selected)
+            group_entries = metadata.get("groups", [])
+            if len(group_entries) > 500:
+                raise ValueError("Invalid number of layer groups.")
+            groups = tuple(LayerGroup(str(entry["name"]), str(entry["id"]), bool(entry.get("collapsed", False)))
+                           for entry in group_entries)
+            return Document(width, height, tuple(layers), active, selected_ids=selected, groups=groups)
     if path.suffix.lower() not in RASTER_SUFFIXES:
         raise ValueError("Open a PNG, JPEG, WebP, or Rasterly document.")
     with Image.open(path) as image:
@@ -79,8 +87,15 @@ def save_project(document, path):
                 archive.writestr(filename, buffer.getvalue())
                 entries.append(dict(id=layer.id, name=layer.name, x=layer.x, y=layer.y,
                                     visible=layer.visible, file=filename))
-            metadata = dict(format="rasterly", version=1, width=document.width, height=document.height,
+                if layer.text is not None:
+                    entries[-1]["text"] = asdict(layer.text)
+                if layer.group_id is not None:
+                    entries[-1]["group_id"] = layer.group_id
+            metadata = dict(format="rasterly", version=2 if document.groups else 1,
+                            width=document.width, height=document.height,
                             active_id=document.active_id, selected_ids=sorted(document.selected_ids), layers=entries)
+            if document.groups:
+                metadata["groups"] = [asdict(group) for group in document.groups]
             archive.writestr("document.json", json.dumps(metadata, ensure_ascii=False, indent=2))
     _atomic_write(path, writer)
 

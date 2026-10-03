@@ -207,11 +207,11 @@ class SizeDialog(QDialog):
 
 
 class FillDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, color=None):
         super().__init__(parent)
         self.setWindowTitle("Fill Selection")
         self.setMinimumWidth(350)
-        self.color = QColor("#ffffff")
+        self.color = QColor(color) if color is not None else QColor("#ffffff")
         layout = QVBoxLayout(self)
         title = QLabel("Fill selection")
         title.setObjectName("dialogTitle")
@@ -221,6 +221,9 @@ class FillDialog(QDialog):
         self.mode.addItems(["Content-Aware", "Solid Color"])
         form.addRow("Fill with", self.mode)
         self.color_button = QPushButton("Choose color…")
+        if color is not None:
+            self.color_button.setText(self.color.name().upper())
+            self.color_button.setStyleSheet(f"border-left: 12px solid {self.color.name()};")
         self.color_button.clicked.connect(self.choose_color)
         form.addRow("", self.color_button)
         layout.addLayout(form)

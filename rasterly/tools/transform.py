@@ -17,7 +17,7 @@ class TransformSession:
 
     @classmethod
     def begin(cls, document):
-        target = extract_target(document)
+        target = extract_target(document, whole_text=True)
         a, b, c, d = target.bounds
         return cls(target, QRectF(a, b, c - a, d - b))
 

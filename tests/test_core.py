@@ -10,6 +10,61 @@ from rasterly import operations as op, files
 
 
 class DocumentTests(unittest.TestCase):
+    def test_new_layer_is_empty_transparent_and_selected_above_active_layer(self):
+        doc = Document.new(37, 19)
+        original = doc.active
+        added = op.add_layer(doc)
+        self.assertEqual(added.active.image.size, (37, 19))
+        self.assertEqual(added.active.image.getextrema(), ((0, 0),) * 4)
+        self.assertEqual(added.active.bounds, (0, 0, 37, 19))
+        self.assertIs(added.layers[0], original)
+        self.assertEqual(added.selected_ids, frozenset({added.active_id}))
+        self.assertEqual(composite(added).tobytes(), composite(doc).tobytes())
+
+    def test_clear_selection_erases_only_active_layer_and_preserves_source_for_undo(self):
+        doc = op.add_layer(Document.new(10, 10))
+        top = replace(doc.active, image=Image.new("RGBA", (10, 10), (80, 120, 160, 128)))
+        selection = Selection.rectangle(2, 3, 6, 8)
+        doc = doc.with_layer(top, selection=selection,
+                             selected_ids=frozenset(layer.id for layer in doc.layers))
+        cleared = op.clear_selection(doc)
+        self.assertEqual(cleared.active.image.getpixel((2, 3)), (0, 0, 0, 0))
+        self.assertEqual(cleared.active.image.getpixel((5, 7)), (0, 0, 0, 0))
+        self.assertEqual(cleared.active.image.getpixel((6, 7)), (80, 120, 160, 128))
+        self.assertEqual(composite(cleared).getpixel((2, 3)), (255, 255, 255, 255))
+        self.assertIs(cleared.layers[0], doc.layers[0])
+        self.assertIs(cleared.selection, selection)
+        self.assertEqual(cleared.selected_ids, doc.selected_ids)
+        self.assertEqual(cleared.active.id, doc.active.id)
+        self.assertEqual(doc.active.image.getpixel((2, 3)), (80, 120, 160, 128))
+
+    def test_clear_irregular_selection_with_hole_preserves_outside_and_off_canvas_pixels(self):
+        layer = Layer("Offset", Image.new("RGBA", (12, 12), "red"), -2, -3)
+        selection = Selection("lasso", ((-3, -3), (8, 0), (0, 8))).subtracted(
+            Selection.rectangle(1, 1, 3, 3))
+        doc = Document(8, 8, (layer,), layer.id, selection)
+        cleared = op.clear_selection(doc)
+        mask = selection.mask((0, 0, 8, 8))
+        self.assertEqual(cleared.active.bounds, layer.bounds)
+        for y in range(12):
+            for x in range(12):
+                dx, dy = x + layer.x, y + layer.y
+                erased = 0 <= dx < 8 and 0 <= dy < 8 and mask.getpixel((dx, dy))
+                self.assertEqual(cleared.active.image.getpixel((x, y)),
+                                 (0, 0, 0, 0) if erased else (255, 0, 0, 255))
+
+    def test_clear_empty_or_nonintersecting_selection_is_noop(self):
+        doc = op.add_layer(Document.new(8, 8)).edited(selection=Selection.rectangle(0, 0, 8, 8))
+        self.assertIs(op.clear_selection(doc), doc)
+        layer = replace(doc.active, image=Image.new("RGBA", (2, 2), "red"), x=10, y=10)
+        doc = doc.with_layer(layer)
+        self.assertIs(op.clear_selection(doc), doc)
+        doc = Document.new(8, 8).edited(selection=Selection.rectangle(2, 2, 5, 5))
+        cleared = op.clear_selection(doc)
+        self.assertIs(op.clear_selection(cleared), cleared)
+        with self.assertRaises(ValueError):
+            op.clear_selection(Document.new(8, 8))
+
     def test_new_image_has_exactly_one_selected_white_visible_layer(self):
         doc = Document.new(37, 19)
         self.assertEqual((doc.width, doc.height), (37, 19))

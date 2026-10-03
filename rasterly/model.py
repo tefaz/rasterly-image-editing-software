@@ -22,6 +22,41 @@ def validate_size(width, height):
 
 
 @dataclass(frozen=True)
+class TextData:
+    content: str = ""
+    family: str = "Sans Serif"
+    size: int = 48  # document pixels, independent of display DPI and zoom
+    color: tuple[int, int, int, int] = (0, 0, 0, 255)
+    bold: bool = False
+    italic: bool = False
+    alignment: str = "left"
+    box_size: tuple[int, int] | None = None  # fit the text layout into a transformed layer
+    quarter_turns: int = 0
+    flip_x: bool = False
+    flip_y: bool = False
+
+    def __post_init__(self):
+        if not isinstance(self.content, str) or len(self.content) > 10000:
+            raise ValueError("Text is limited to 10,000 characters.")
+        if not isinstance(self.family, str) or not self.family or len(self.family) > 256:
+            raise ValueError("Invalid font family.")
+        if not isinstance(self.size, int) or not 1 <= self.size <= 2048:
+            raise ValueError("Font size must be between 1 and 2,048 pixels.")
+        if self.alignment not in {"left", "center", "right"}:
+            raise ValueError("Invalid text alignment.")
+        if len(self.color) != 4 or any(not isinstance(c, int) or not 0 <= c <= 255 for c in self.color):
+            raise ValueError("Invalid text color.")
+        object.__setattr__(self, "color", tuple(self.color))
+        if self.box_size is not None:
+            if len(self.box_size) != 2 or any(not isinstance(side, int) for side in self.box_size):
+                raise ValueError("Invalid text box size.")
+            validate_size(*self.box_size)
+            object.__setattr__(self, "box_size", tuple(self.box_size))
+        if not isinstance(self.quarter_turns, int) or not 0 <= self.quarter_turns < 4:
+            raise ValueError("Invalid text rotation.")
+
+
+@dataclass(frozen=True)
 class Layer:
     name: str
     image: Image.Image = field(repr=False, compare=False)
@@ -29,10 +64,19 @@ class Layer:
     y: int = 0
     visible: bool = True
     id: str = field(default_factory=lambda: uuid4().hex)
+    text: TextData | None = None
+    group_id: str | None = None
 
     @property
     def bounds(self):
         return self.x, self.y, self.x + self.image.width, self.y + self.image.height
+
+
+@dataclass(frozen=True)
+class LayerGroup:
+    name: str = "Group"
+    id: str = field(default_factory=lambda: uuid4().hex)
+    collapsed: bool = False
 
 
 @dataclass(frozen=True)
@@ -44,9 +88,21 @@ class Document:
     selection: Selection | None = None
     revision: int = field(default_factory=lambda: next(_revisions))
     selected_ids: frozenset[str] = field(default_factory=frozenset)
+    groups: tuple[LayerGroup, ...] = ()
 
     def __post_init__(self):
         ids = {layer.id for layer in self.layers}
+        group_ids = {group.id for group in self.groups}
+        if len(group_ids) != len(self.groups) or group_ids & ids:
+            raise ValueError("Duplicate layer group identifiers.")
+        used = {layer.group_id for layer in self.layers if layer.group_id is not None}
+        if not used <= group_ids:
+            raise ValueError("Invalid layer group membership.")
+        for group_id in used:
+            positions = [i for i, layer in enumerate(self.layers) if layer.group_id == group_id]
+            if positions[-1] - positions[0] + 1 != len(positions):
+                raise ValueError("Keep a group's layers together in the stacking order.")
+        object.__setattr__(self, "groups", tuple(group for group in self.groups if group.id in used))
         object.__setattr__(self, "selected_ids", frozenset((self.selected_ids & ids) | {self.active_id}))
 
     @classmethod

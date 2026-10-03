@@ -9,8 +9,8 @@ from dataclasses import replace
 from PIL import Image
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QTabBar, QMenu
-from PyQt6.QtGui import QImage, QContextMenuEvent, QPainter
+from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QTabBar, QMenu, QToolButton
+from PyQt6.QtGui import QImage, QContextMenuEvent, QPainter, QColor
 from rasterly.model import Document
 from rasterly.selection import Selection
 from rasterly.ui.window import EditorWindow
@@ -66,6 +66,68 @@ class InteractionTests(unittest.TestCase):
         QTest.mouseRelease(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(83, 61))
         self.assertEqual(self.controller.document.selection.bounds, (10, 20, 83, 61))
         self.assertIsNone(self.canvas.measurement)
+
+    def test_outside_rectangle_keeps_original_corner_when_drag_enters_through_side(self):
+        self.canvas.set_tool("rectangle")
+        QTest.mousePress(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(210, -20))
+        QTest.mouseMove(self.canvas, self.screen(220, 10))
+        self.assertIsNone(self.canvas.preview_selection)
+        QTest.mouseMove(self.canvas, self.screen(180, 20))
+        self.assertEqual(self.canvas.preview_selection.bounds, (180, 0, 200, 20))
+        QTest.mouseRelease(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(-10, 130))
+        self.assertEqual(self.controller.document.selection.bounds, (0, 0, 200, 120))
+        self.assertIsNone(self.canvas.measurement)
+
+    def test_outside_rectangle_covers_entire_canvas_from_every_corner_at_different_zooms(self):
+        paths = [((210, -20), (-10, 130)), ((-10, -20), (210, 130)),
+                 ((210, 140), (-10, -10)), ((-10, 140), (210, -10))]
+        self.canvas.set_tool("rectangle")
+        for zoom in (.25, .67, 2, 4):
+            self.canvas.set_zoom(zoom)
+            self.canvas.pan = QPointF(-15, 23)
+            for start, end in paths:
+                with self.subTest(zoom=zoom, start=start):
+                    self.controller.set_selection(None)
+                    QTest.mousePress(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(*start))
+                    # A quick drag can arrive at release without an intermediate move event.
+                    QTest.mouseRelease(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(*end))
+                    selection = self.controller.document.selection
+                    self.assertIsNotNone(selection)
+                    self.assertEqual(selection.bounds, (0, 0, 200, 120))
+                    self.assertEqual(selection.mask((0, 0, 200, 120)).getextrema(), (255, 255))
+
+    def test_outside_rectangle_never_entering_or_cancelled_preserves_previous_selection(self):
+        self.canvas.set_tool("rectangle")
+        self.controller.set_selection(Selection.rectangle(20, 20, 60, 60))
+        original = self.controller.document
+        count = len(self.controller.history.undo_stack)
+        QTest.mousePress(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(210, -20))
+        QTest.mouseMove(self.canvas, self.screen(220, 50))
+        QTest.mouseRelease(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(210, 130))
+        self.assertIs(self.controller.document, original)
+        QTest.mousePress(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(210, -20))
+        QTest.mouseMove(self.canvas, self.screen(220, 10))
+        QTest.mouseMove(self.canvas, self.screen(20, 100))
+        QTest.keyClick(self.canvas, Qt.Key.Key_Escape)
+        QTest.mouseRelease(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(20, 100))
+        self.assertIs(self.controller.document, original)
+        self.assertEqual(len(self.controller.history.undo_stack), count)
+
+    def test_outside_lasso_and_patch_trace_actual_entry_edge(self):
+        for tool in ("lasso", "patch"):
+            with self.subTest(tool=tool):
+                self.canvas.set_tool(tool)
+                self.controller.set_selection(Selection.rectangle(150, 0, 200, 50))
+                QTest.mousePress(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(210, -20))
+                QTest.mouseMove(self.canvas, self.screen(220, 10))
+                QTest.mouseMove(self.canvas, self.screen(180, 20))
+                self.assertEqual(self.canvas.tools[tool].points[0], (200, 15))
+                if tool == "patch":
+                    self.assertFalse(self.canvas.tools[tool].sourcing)
+                QTest.mouseMove(self.canvas, self.screen(20, 100))
+                QTest.mouseMove(self.canvas, self.screen(200, 100))
+                QTest.mouseRelease(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(200, 15))
+                self.assertEqual(self.controller.document.selection.bounds, (20, 15, 200, 100))
 
     def test_lasso_closes_and_displays_bounding_dimensions_during_drag(self):
         self.canvas.set_tool("lasso")
@@ -182,6 +244,77 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(self.controller.document.layers[0].name, "Retouch")
         self.window.layers.list.setCurrentRow(0)
         self.assertEqual(self.controller.document.active.name, "Background")
+
+    def test_new_layer_button_creates_fully_transparent_layer(self):
+        original = self.controller.document
+        button = next(button for button in self.window.layers.findChildren(QToolButton)
+                      if button.toolTip() == "Create transparent layer")
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        doc = self.controller.document
+        self.assertEqual(len(doc.layers), 2)
+        self.assertEqual(doc.active.image.size, (200, 120))
+        self.assertEqual(doc.active.image.getextrema(), ((0, 0),) * 4)
+        self.assertIs(doc.layers[0], original.active)
+        self.assertEqual(self.controller.history.undo_stack[-1].label, "New layer")
+        self.controller.undo()
+        self.assertIs(self.controller.document, original)
+
+    def test_delete_clears_selection_on_active_layer_and_restores_exactly_with_undo(self):
+        self.window.actions["layer_new"].trigger()
+        self.controller.apply("Paint", lambda doc:
+            doc.with_layer(replace(doc.active, image=Image.new("RGBA", (200, 120), "red"))))
+        self.controller.set_selection(Selection.rectangle(10, 20, 40, 60))
+        self.controller.select_layers({layer.id for layer in self.controller.document.layers},
+                                      self.controller.document.active_id)
+        original = self.controller.document
+        count = len(self.controller.history.undo_stack)
+        self.window.layers.list.setFocus()
+        QTest.keyClick(self.window.layers.list, Qt.Key.Key_Delete)
+        doc = self.controller.document
+        self.assertEqual(len(doc.layers), 2)
+        self.assertIs(doc.layers[0], original.layers[0])
+        self.assertEqual(doc.active.image.getpixel((10, 20)), (0, 0, 0, 0))
+        self.assertEqual(doc.active.image.getpixel((39, 59)), (0, 0, 0, 0))
+        self.assertEqual(doc.active.image.getpixel((40, 60)), (255, 0, 0, 255))
+        self.assertIs(doc.selection, original.selection)
+        self.assertEqual(doc.selected_ids, original.selected_ids)
+        self.assertEqual(len(self.controller.history.undo_stack), count + 1)
+        self.assertEqual(self.controller.history.undo_stack[-1].label, "Clear selection")
+        QTest.keyClick(self.window.layers.list, Qt.Key.Key_Delete)
+        self.assertEqual(len(self.controller.history.undo_stack), count + 1)
+        self.controller.undo()
+        self.assertIs(self.controller.document, original)
+        self.controller.redo()
+        self.assertIs(self.controller.document, doc)
+
+    def test_delete_without_selection_keeps_layer_and_document(self):
+        original = self.controller.document
+        self.assertFalse(self.window.actions["clear"].isEnabled())
+        QTest.keyClick(self.canvas, Qt.Key.Key_Delete)
+        self.assertIs(self.controller.document, original)
+        self.assertEqual(len(self.controller.history.undo_stack), 0)
+
+    def test_delete_in_hex_field_and_gradient_editor_does_not_clear_image_selection(self):
+        self.controller.set_selection(Selection.rectangle(5, 5, 50, 50))
+        original = self.controller.document
+        field = self.window.colors.hex_input
+        field.setFocus()
+        field.selectAll()
+        QTest.keyClick(field, Qt.Key.Key_Delete)
+        self.assertEqual(field.text(), "")
+        self.assertIs(self.controller.document, original)
+        self.canvas.set_tool("gradient")
+        editor = self.window.gradient_editor
+        with patch("rasterly.ui.gradient.QColorDialog.getColor", return_value=QColor("#ff0000")):
+            QTest.mouseClick(editor, Qt.MouseButton.LeftButton, pos=editor.bar.center().toPoint())
+        self.assertEqual(len(editor.stops), 3)
+        editor.setFocus()
+        QTest.keyClick(editor, Qt.Key.Key_Delete)
+        self.assertEqual(len(editor.stops), 2)
+        self.assertIs(self.controller.document, original)
+        self.canvas.setFocus()
+        QTest.keyClick(self.canvas, Qt.Key.Key_Delete)
+        self.assertEqual(self.controller.document.active.image.getpixel((10, 10)), (0, 0, 0, 0))
 
     def test_zoom_coordinate_mapping_is_independent_of_full_resolution_data(self):
         self.canvas.pan = QPointF(-57, 123)
