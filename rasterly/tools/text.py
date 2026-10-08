@@ -74,7 +74,7 @@ class TextTool(Tool):
         if self.editing and not self.commit():
             return
         layer = next((layer for layer in reversed(self.canvas.document.layers)
-                      if layer.visible and layer.text is not None
+                      if self.canvas.document.layer_visible(layer) and layer.text is not None
                       and layer.x <= point.x() < layer.bounds[2]
                       and layer.y <= point.y() < layer.bounds[3]), None)
         self.begin(point, layer)
@@ -83,9 +83,11 @@ class TextTool(Tool):
         if self.editing or self.canvas.controller.busy or not self.canvas.document:
             return
         if layer:
-            if layer.text is None or not layer.visible:
+            if layer.text is None or not self.canvas.document.layer_visible(layer):
                 return
-            self.canvas.controller.select_layer(layer.id)
+            doc = self.canvas.document
+            if doc.active_id != layer.id or doc.selected_ids != frozenset({layer.id}):
+                self.canvas.controller.select_layer(layer.id)
         self.layer_id = layer.id if layer else None
         self.position = (layer.x, layer.y) if layer else (round(point.x()), round(point.y()))
         self.data = layer.text if layer else replace(self.defaults, content="")

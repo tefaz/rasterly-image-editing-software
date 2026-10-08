@@ -83,10 +83,6 @@ class LayersPanel(QWidget):
         self.count.setObjectName("muted")
         heading_layout.addStretch()
         heading_layout.addWidget(self.count)
-        self.history_button = QToolButton()
-        self.history_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.history_button.setToolTip("Open action history")
-        heading_layout.addWidget(self.history_button)
         layout.addWidget(heading)
         self.list = LayerList()
         self.list.setObjectName("layerList")
@@ -159,9 +155,10 @@ class LayersPanel(QWidget):
                         header.setData(Qt.ItemDataRole.UserRole, group.id)
                         header.setData(GROUP_ROLE, True)
                         header.setData(COLLAPSED_ROLE, group.collapsed)
-                        header.setFlags(header.flags() | Qt.ItemFlag.ItemIsEditable)
+                        header.setFlags(header.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEditable)
+                        header.setCheckState(Qt.CheckState.Checked if group.visible else Qt.CheckState.Unchecked)
                         header.setSizeHint(QSize(200, 38))
-                        header.setToolTip("Click the arrow to expand / collapse\nDouble-click the name to rename · Drag to reorder the group")
+                        header.setToolTip("Uncheck to hide the entire group\nClick the arrow to expand / collapse\nDouble-click the name to rename · Drag to reorder the group")
                         self.list.addItem(header)
                         added.add(group.id)
                     item = QListWidgetItem(layer_thumbnail(layer.image, text=layer.text is not None), layer.name)
@@ -235,19 +232,33 @@ class LayersPanel(QWidget):
     def merge(self):
         self.controller.apply("Merge layers", operations.merge_layers)
 
+    def toggle_visibility(self):
+        doc = self.controller.document
+        if doc is None:
+            return
+        group_id = self.current_group()
+        if group_id:
+            group = next(group for group in doc.groups if group.id == group_id)
+            self.controller.apply("Group visibility", lambda doc: groups.set_visible(doc, group_id, not group.visible))
+        else:
+            self.controller.apply("Layer visibility", lambda doc:
+                                  doc.with_layer(replace(doc.active, visible=not doc.active.visible)))
+
     def item_changed(self, item):
         if self.updating:
             return
         entry_id = item.data(Qt.ItemDataRole.UserRole)
         if item.data(GROUP_ROLE):
+            group = next(group for group in self.controller.document.groups if group.id == entry_id)
             name = item.text().strip()
             if not name:
-                group = next(group for group in self.controller.document.groups if group.id == entry_id)
                 self.list.blockSignals(True)
                 item.setText(group.name)
                 self.list.blockSignals(False)
-            else:
+            elif name != group.name:
                 self.controller.apply("Rename group", lambda doc: groups.rename_group(doc, entry_id, name))
+            elif (visible := item.checkState() == Qt.CheckState.Checked) != group.visible:
+                self.controller.apply("Group visibility", lambda doc: groups.set_visible(doc, entry_id, visible))
             return
         layer = next(l for l in self.controller.document.layers if l.id == entry_id)
         name = item.text().strip() or layer.name
@@ -324,10 +335,13 @@ class LayersPanel(QWidget):
         edit_text = rasterize = ungroup = None
         if not group_id and self.controller.document.active.text is not None:
             edit_text = menu.addAction("Edit Text Layer")
-            edit_text.setEnabled(self.controller.document.active.visible)
+            edit_text.setEnabled(self.controller.document.layer_visible(self.controller.document.active))
             rasterize = menu.addAction("Rasterize Text Layer")
             menu.addSeparator()
         kind = "Group" if group_id else "Layer"
+        doc = self.controller.document
+        visible = next(group.visible for group in doc.groups if group.id == group_id) if group_id else doc.active.visible
+        visibility = menu.addAction(f"{'Hide' if visible else 'Show'} {kind}")
         rename = menu.addAction(f"Rename {kind}…")
         duplicate = menu.addAction(f"Duplicate {kind}")
         delete = menu.addAction(f"Delete {kind}")
@@ -340,7 +354,9 @@ class LayersPanel(QWidget):
             group = menu.addAction("Group Layers")
             merge = menu.addAction("Merge Layers")
         chosen = menu.exec(self.list.mapToGlobal(point))
-        if edit_text is not None and chosen == edit_text:
+        if chosen == visibility:
+            self.toggle_visibility()
+        elif edit_text is not None and chosen == edit_text:
             self.edit_text_requested.emit()
         elif rasterize is not None and chosen == rasterize:
             self.controller.apply("Rasterize text", operations.rasterize_text)

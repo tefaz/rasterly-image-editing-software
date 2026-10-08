@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
                             QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QPushButton,
@@ -17,8 +17,9 @@ def buttons(dialog, label="OK"):
 
 
 class NewDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, settings=None):
         super().__init__(parent)
+        self.settings = settings if settings is not None else QSettings("Rasterly", "Rasterly")
         self.setWindowTitle("New image")
         self.setMinimumWidth(360)
         layout = QVBoxLayout(self)
@@ -41,8 +42,17 @@ class NewDialog(QDialog):
         for spin in (self.width_input, self.height_input):
             spin.setRange(1, MAX_SIDE)
             spin.setSuffix(" px")
-        self.width_input.setValue(1920)
-        self.height_input.setValue(1080)
+        try:
+            width = int(self.settings.value("newCanvas/width", 1920))
+            height = int(self.settings.value("newCanvas/height", 1080))
+            validate_size(width, height)
+        except (TypeError, ValueError, OverflowError):
+            width, height = 1920, 1080
+        self.width_input.setValue(width)
+        self.height_input.setValue(height)
+        preset = next((index for index in range(self.preset.count())
+                       if self.preset.itemData(index) == (width, height)), self.preset.count() - 1)
+        self.preset.setCurrentIndex(preset)
         form.addRow("Preset", self.preset)
         form.addRow("Width", self.width_input)
         form.addRow("Height", self.height_input)
@@ -74,6 +84,12 @@ class NewDialog(QDialog):
     @property
     def dimensions(self):
         return self.width_input.value(), self.height_input.value()
+
+    def remember_dimensions(self):
+        width, height = self.dimensions
+        self.settings.setValue("newCanvas/width", width)
+        self.settings.setValue("newCanvas/height", height)
+        self.settings.sync()
 
     def accept(self):
         try:

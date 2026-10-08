@@ -28,9 +28,10 @@ class History:
         self.pruned = False
 
     def push(self, label, before, after):
-        # Selections are session state: they have their own history entries but
+        # Selections and draft paths are session state: they have history entries but
         # retain the pixel revision so selecting does not dirty a saved image.
-        if before.revision == after.revision and before.selection == after.selection:
+        if (before.revision == after.revision and before.selection == after.selection
+                and before.polygon_path == after.polygon_path):
             return
         self.toggle_command = None
         self.undo_stack.append(Command(label, before, after))

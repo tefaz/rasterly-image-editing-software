@@ -1,3 +1,7 @@
+from pathlib import Path
+
+_RESOURCES = Path(__file__).resolve().parents[1] / "resources"
+
 STYLE = """
 QWidget { background: #23252a; color: #d2d5dc; font-family: 'Inter', 'Noto Sans', 'Segoe UI', sans-serif; font-size: 12px; }
 QMainWindow { background: #1a1b1f; }
@@ -34,8 +38,9 @@ QTabBar#documentTabs::tab { background: #23252a; color: #949cab; padding: 9px 10
 QTabBar#documentTabs::tab:selected { background: #30333b; color: #e1e7f2; border-top: 2px solid #94a9e4; }
 QTabBar#documentTabs::tab:hover { background: #363b46; }
 QTabBar#documentTabs::close-button { subcontrol-position: right; }
-QDockWidget#historyDock { background: #272a30; border-left: 1px solid #17191d; }
-QDockWidget#historyDock::title { background: #2d3037; padding: 10px; }
+QWidget#sidebarRail { background: #292c32; border-left: 1px solid #17191d; border-right: 1px solid #17191d; }
+QWidget#historyOverlay { background: #272a30; border: 1px solid #505865; border-radius: 5px; }
+QLabel#historyTitle { color: #e1e7f2; font-weight: 600; }
 QListWidget#historyList { background: #272a30; border: none; outline: none; }
 QListWidget#historyList::item { padding: 9px 8px; border-bottom: 1px solid #22252a; }
 QListWidget#historyList::item:selected { background: #3a4458; color: #f1f4fc; border-left: 2px solid #a7bbf7; }
@@ -49,6 +54,13 @@ QListWidget#layerList::item:selected { background: #3a4458; color: #f1f4fc; bord
 QListWidget#layerList::item:hover { background: #333a46; }
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background: #1f2228; border: 1px solid #464c58; border-radius: 4px; padding: 6px 9px; selection-background-color: #536d9f; }
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border-color: #a7bbf7; }
+QSpinBox, QDoubleSpinBox { padding-right: 26px; }
+QSpinBox::up-button, QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 20px; background: #30353e; border-left: 1px solid #464c58; border-bottom: 1px solid #464c58; border-top-right-radius: 4px; }
+QSpinBox::down-button, QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 20px; background: #30353e; border-left: 1px solid #464c58; border-bottom-right-radius: 4px; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover, QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover { background: #434b5b; }
+QSpinBox::up-button:pressed, QSpinBox::down-button:pressed, QDoubleSpinBox::up-button:pressed, QDoubleSpinBox::down-button:pressed { background: #536d9f; }
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow { image: url("__SPIN_UP__"); width: 10px; height: 6px; }
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow { image: url("__SPIN_DOWN__"); width: 10px; height: 6px; }
 QComboBox::drop-down { border: none; width: 22px; }
 QComboBox QAbstractItemView { background: #292e38; selection-background-color: #465673; border: 1px solid #555d6d; }
 QCheckBox { spacing: 8px; background: transparent; }
@@ -68,4 +80,5 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QToolTip { background: #363d4a; color: #f1f4fa; padding: 6px; border: 1px solid #5b667b; }
 QProgressBar { background: #1a1e27; border: none; border-radius: 3px; max-height: 4px; }
 QProgressBar::chunk { background: #a7bbf7; }
-"""
+""".replace("__SPIN_UP__", (_RESOURCES / "chevron-up.svg").as_posix()).replace(
+    "__SPIN_DOWN__", (_RESOURCES / "chevron-down.svg").as_posix())

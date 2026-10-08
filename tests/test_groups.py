@@ -7,12 +7,13 @@ import zipfile
 from dataclasses import replace
 from pathlib import Path
 from PIL import Image
-from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtCore import Qt, QPoint, QPointF
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLineEdit, QStyleOptionViewItem, QStyle
 from rasterly import groups, operations, files
 from rasterly.model import Document, Layer, LayerGroup, TextData, composite
 from rasterly.history import History
+from rasterly.painting import PaintStroke
 from rasterly.ui.window import EditorWindow
 from rasterly.ui.layers import GROUP_ROLE, PARENT_ROLE
 
@@ -27,6 +28,82 @@ def document(count=4):
 
 
 class GroupTests(unittest.TestCase):
+    def test_group_visibility_preserves_child_flags_and_is_undoable(self):
+        doc = groups.group_layers(document())
+        doc = doc.with_layer(replace(doc.active, visible=False))
+        hidden = groups.set_visible(doc, doc.groups[0].id, False)
+        self.assertEqual(hidden.layers, doc.layers)
+        self.assertFalse(any(hidden.layer_visible(layer) for layer in hidden.layers if layer.group_id))
+        expected = composite(replace(doc, layers=tuple(layer for layer in doc.layers if not layer.group_id)))
+        self.assertEqual(composite(hidden).tobytes(), expected.tobytes())
+        self.assertIs(groups.set_visible(hidden, hidden.groups[0].id, False), hidden)
+        shown = groups.set_visible(hidden, hidden.groups[0].id, True)
+        self.assertEqual(composite(shown).tobytes(), composite(doc).tobytes())
+        self.assertFalse(shown.active.visible)
+        history = History()
+        history.push("Group visibility", doc, hidden)
+        self.assertIs(history.undo(), doc)
+        self.assertIs(history.redo(), hidden)
+
+    def test_hidden_group_duplicate_and_ungroup_remain_hidden(self):
+        doc = groups.group_layers(document())
+        doc = groups.set_visible(doc, doc.groups[0].id, False)
+        copied = groups.duplicate_group(doc, doc.groups[0].id)
+        self.assertFalse(copied.groups[-1].visible)
+        self.assertEqual(composite(copied).tobytes(), composite(doc).tobytes())
+        ungrouped = groups.ungroup(doc, doc.groups[0].id)
+        self.assertFalse(ungrouped.groups)
+        self.assertEqual(composite(ungrouped).tobytes(), composite(doc).tobytes())
+
+    def test_hidden_group_visibility_survives_save_export_and_old_projects_default_visible(self):
+        doc = groups.group_layers(document())
+        doc = groups.set_visible(doc, doc.groups[0].id, False)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hidden.rasterly"
+            files.save_project(doc, path)
+            loaded = files.open_document(path)
+            self.assertFalse(loaded.groups[0].visible)
+            self.assertEqual([layer.visible for layer in loaded.layers], [layer.visible for layer in doc.layers])
+            self.assertEqual(composite(loaded).tobytes(), composite(doc).tobytes())
+            png = Path(directory) / "hidden.png"
+            files.export_image(loaded, png)
+            with Image.open(png) as exported:
+                self.assertEqual(exported.tobytes(), composite(doc).tobytes())
+            with zipfile.ZipFile(path) as archive:
+                entries = {name: archive.read(name) for name in archive.namelist()}
+            metadata = json.loads(entries["document.json"])
+            del metadata["groups"][0]["visible"]
+            entries["document.json"] = json.dumps(metadata).encode()
+            with zipfile.ZipFile(path, "w") as archive:
+                for name, contents in entries.items():
+                    archive.writestr(name, contents)
+            self.assertTrue(files.open_document(path).groups[0].visible)
+
+    def test_hidden_group_rejects_brush_and_move_operations(self):
+        doc = groups.group_layers(document())
+        doc = groups.set_visible(doc, doc.groups[0].id, False)
+        self.assertTrue(doc.active.visible)
+        with self.assertRaisesRegex(ValueError, "Show"):
+            PaintStroke(doc)
+        with self.assertRaisesRegex(ValueError, "Show"):
+            operations.extract_target(doc)
+
+    def test_merge_preserves_hidden_group_and_excludes_hidden_members_across_folders(self):
+        doc = groups.group_layers(document())
+        hidden = groups.set_visible(doc, doc.groups[0].id, False)
+        merged = operations.merge_layers(hidden)
+        self.assertFalse(merged.layer_visible(merged.active))
+        self.assertTrue(merged.active.visible)
+        self.assertEqual(composite(merged).tobytes(), composite(hidden).tobytes())
+        shown = groups.set_visible(merged, merged.groups[0].id, True)
+        self.assertEqual(composite(shown).tobytes(), composite(doc).tobytes())
+        mixed = hidden.with_layer(replace(hidden.layers[1], visible=False)).edited(
+            selected_ids=frozenset({hidden.layers[0].id, hidden.active_id}))
+        before = composite(mixed)
+        merged = operations.merge_layers(mixed)
+        self.assertIsNone(merged.active.group_id)
+        self.assertEqual(composite(merged).tobytes(), before.tobytes())
+
     def test_group_keeps_pixels_order_selection_and_can_be_undone(self):
         before = document()
         after = groups.group_layers(before)
@@ -275,6 +352,38 @@ class GroupInteractionTests(unittest.TestCase):
         self.assertTrue(all(l.visible for l in self.controller.document.layers if l.id != layer_id))
         self.controller.undo()
         self.assertTrue(all(l.visible for l in self.controller.document.layers))
+
+    def test_group_checkbox_hides_canvas_preserves_children_and_undo_restores(self):
+        header = self.create_group()
+        before = self.controller.document
+        canvas = self.window.canvas
+        point = canvas.to_screen(QPointF(10, 5)).toPoint()
+        visible_pixel = canvas.grab().toImage().pixelColor(point)
+        index = self.panel.list.indexFromItem(header)
+        option = QStyleOptionViewItem()
+        self.panel.list.initViewItemOption(option)
+        option.rect = self.panel.list.visualItemRect(header)
+        delegate = self.panel.list.itemDelegate()
+        delegate.initStyleOption(option, index)
+        adjusted = delegate.indented_option(option, index)
+        rect = self.panel.list.style().subElementRect(QStyle.SubElement.SE_ItemViewItemCheckIndicator, adjusted, self.panel.list)
+        QTest.mouseClick(self.panel.list.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+        hidden = self.controller.document
+        self.assertFalse(hidden.groups[0].visible)
+        self.assertEqual(hidden.layers, before.layers)
+        self.assertNotEqual(canvas.grab().toImage().pixelColor(point), visible_pixel)
+        self.assertEqual(self.header().checkState(), Qt.CheckState.Unchecked)
+        self.controller.undo()
+        self.assertTrue(self.controller.document.groups[0].visible)
+        self.assertEqual(canvas.grab().toImage().pixelColor(point), visible_pixel)
+        self.controller.redo()
+        self.assertFalse(self.controller.document.groups[0].visible)
+        self.panel.toggle_group(hidden.groups[0].id)
+        self.assertTrue(self.controller.document.groups[0].collapsed)
+        self.panel.select_group(hidden.groups[0].id)
+        self.window.actions["layer_visibility"].trigger()
+        self.assertTrue(self.controller.document.groups[0].visible)
+        self.assertTrue(self.controller.document.groups[0].collapsed)
 
     def test_collapsed_folder_can_be_selected_from_another_layer(self):
         self.create_group()

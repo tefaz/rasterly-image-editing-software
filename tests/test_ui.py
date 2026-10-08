@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 from dataclasses import replace
 from PIL import Image
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, QSettings
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QTabBar, QMenu, QToolButton
 from PyQt6.QtGui import QImage, QContextMenuEvent, QPainter, QColor
@@ -435,52 +435,84 @@ class InteractionTests(unittest.TestCase):
             dialog.height_input.setValue(22)
             dialog.accept()
         QTimer.singleShot(5, accept_new)
-        self.window.actions["new"].trigger()
+        with tempfile.TemporaryDirectory() as directory:
+            settings = QSettings(str(Path(directory) / "preferences.ini"), QSettings.Format.IniFormat)
+            with patch("rasterly.ui.dialogs.QSettings", return_value=settings):
+                self.window.actions["new"].trigger()
         self.assertEqual(self.window.tab_bar.count(), 2)
         self.assertIs(self.controller.sessions[0].document, original)
         self.assertEqual((self.controller.document.width, self.controller.document.height), (33, 22))
 
-    def test_history_button_opens_attached_panel_and_clicks_restore_states(self):
+    def test_history_button_opens_overlay_without_resizing_canvas_and_restores_states(self):
         initial = self.controller.document
         self.window.actions["layer_new"].trigger()
         first_edit = self.controller.document
         self.window.actions["layer_duplicate"].trigger()
         final = self.controller.document
         self.controller.saved_revision = final.revision
-        QTest.mouseClick(self.window.layers.history_button, Qt.MouseButton.LeftButton)
+        canvas_geometry = self.canvas.geometry()
+        origin = QPointF(self.canvas.origin)
+        QTest.mouseClick(self.window.history_button, Qt.MouseButton.LeftButton)
         app.processEvents()
-        dock = self.window.history_dock
-        self.assertTrue(dock.isVisible())
-        self.assertFalse(dock.isFloating())
-        self.assertEqual(dock.list.count(), 3)
-        QTest.mouseClick(dock.list.viewport(), Qt.MouseButton.LeftButton,
-                         pos=dock.list.visualItemRect(dock.list.item(1)).center())
+        overlay = self.window.history_overlay
+        self.assertTrue(overlay.isVisible())
+        self.assertIs(overlay.parent(), self.window.centralWidget())
+        self.assertEqual(self.canvas.geometry(), canvas_geometry)
+        self.assertEqual(self.canvas.origin, origin)
+        self.assertEqual(self.window.history_button.width(), self.window.history_button.height())
+        self.assertEqual(self.window.history_button.toolButtonStyle(), Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.assertEqual(overlay.list.count(), 3)
+        QTest.mouseClick(overlay.list.viewport(), Qt.MouseButton.LeftButton,
+                         pos=overlay.list.visualItemRect(overlay.list.item(1)).center())
         self.assertEqual(self.controller.document.revision, first_edit.revision)
         self.assertTrue(self.controller.dirty)
-        self.assertEqual(dock.list.currentRow(), 1)
-        self.assertEqual(dock.list.count(), 3)
-        QTest.mouseClick(dock.list.viewport(), Qt.MouseButton.LeftButton,
-                         pos=dock.list.visualItemRect(dock.list.item(0)).center())
+        self.assertEqual(overlay.list.currentRow(), 1)
+        self.assertEqual(overlay.list.count(), 3)
+        QTest.mouseClick(overlay.list.viewport(), Qt.MouseButton.LeftButton,
+                         pos=overlay.list.visualItemRect(overlay.list.item(0)).center())
         self.assertEqual(self.controller.document.revision, initial.revision)
-        QTest.mouseClick(dock.list.viewport(), Qt.MouseButton.LeftButton,
-                         pos=dock.list.visualItemRect(dock.list.item(2)).center())
+        QTest.mouseClick(overlay.list.viewport(), Qt.MouseButton.LeftButton,
+                         pos=overlay.list.visualItemRect(overlay.list.item(2)).center())
         self.assertEqual(self.controller.document.revision, final.revision)
         self.assertFalse(self.controller.dirty)
-        dock.close()
+        QTest.mouseClick(overlay.close_button, Qt.MouseButton.LeftButton)
+        self.assertFalse(overlay.isVisible())
         self.assertFalse(self.window.actions["history"].isChecked())
 
     def test_history_panel_changes_with_active_tab_and_new_edit_replaces_future(self):
         self.window.actions["layer_new"].trigger()
         self.window.actions["layer_duplicate"].trigger()
         self.controller.add_document(Document.new(60, 40))
-        self.assertEqual(self.window.history_dock.list.count(), 1)
+        self.assertEqual(self.window.history_overlay.list.count(), 1)
         self.controller.switch_document(0)
-        self.assertEqual(self.window.history_dock.list.count(), 3)
+        self.assertEqual(self.window.history_overlay.list.count(), 3)
         self.window.jump_history(0)
         self.window.apply("Canvas Size", lambda doc: operations.resize_canvas(doc, 250, 130))
         self.assertEqual(self.controller.history.state_labels, ["New image", "Canvas Size"])
-        self.assertEqual(self.window.history_dock.list.count(), 2)
+        self.assertEqual(self.window.history_overlay.list.count(), 2)
         self.assertFalse(self.controller.history.redo_stack)
+
+    def test_history_overlay_tracks_sidebar_on_resize_and_closes_with_icon_or_escape(self):
+        button = self.window.history_button
+        overlay = self.window.history_overlay
+        self.window.actions["history"].trigger()
+        self.assertTrue(overlay.isVisible())
+        self.assertTrue(button.isChecked())
+        for width, height in ((2560, 1440), (880, 570)):
+            self.window.resize(width, height)
+            app.processEvents()
+            central = self.window.centralWidget()
+            anchor = button.mapTo(central, QPoint(0, 0))
+            self.assertTrue(central.rect().contains(overlay.geometry()))
+            self.assertLess(overlay.geometry().right(), anchor.x())
+            self.assertLessEqual(anchor.x() - overlay.geometry().right(), 12)
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        self.assertFalse(overlay.isVisible())
+        self.assertFalse(self.window.actions["history"].isChecked())
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        QTest.keyClick(overlay.list, Qt.Key.Key_Escape)
+        self.assertFalse(overlay.isVisible())
+        self.assertFalse(button.isChecked())
 
     def test_ctrl_c_ctrl_v_creates_new_layer_in_same_tab_with_full_resolution_lasso_alpha(self):
         original = self.controller.document

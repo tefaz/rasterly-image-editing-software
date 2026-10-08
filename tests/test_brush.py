@@ -6,7 +6,7 @@ import time
 import unittest
 
 from PIL import Image
-from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtCore import QPointF, QRect, Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
@@ -288,6 +288,61 @@ class BrushInteractionTests(unittest.TestCase):
         self.assertEqual(len(self.controller.history.undo_stack), count)
         self.assertEqual(self.controller.document.layers[1].image.getbbox(), None)
         self.assertIs(self.controller.document.layers[0], original.layers[0])
+
+    def test_preview_has_no_patch_seams_at_fractional_zoom(self):
+        for tool_id in ("brush", "eraser"):
+            for zoom in (.65, 1.35, 2.75):
+                with self.subTest(tool=tool_id, zoom=zoom):
+                    bottom = Layer("Bottom", Image.new("RGBA", (220, 180), "green"))
+                    top = Layer("Top", Image.new("RGBA", (220, 180), (80, 120, 160, 128)))
+                    self.controller.replace_document(Document(220, 180, (bottom, top), top.id))
+                    self.canvas.set_zoom(zoom)
+                    self.canvas.pan = QPointF(.37, .61)
+                    self.canvas.set_tool(tool_id)
+                    self.window.paint_spins["size"].setValue(16)
+                    self.window.paint_spins["hardness"].setValue(35)
+                    self.window.paint_spins["opacity"].setValue(55)
+                    QTest.mousePress(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(80, 85))
+                    QTest.mouseMove(self.canvas, self.screen(150, 100))
+                    # Keep the cursor outline outside the area being compared.
+                    self.canvas.last_mouse = QPointF(-100, -100)
+                    region = self.canvas.to_screen(QPointF(40, 40)).toPoint()
+                    rect = QRect(region.x(), region.y(), int(140 * zoom), int(105 * zoom))
+                    preview = self.canvas.grab(rect).toImage()
+                    QTest.mouseRelease(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(150, 100))
+                    self.wait_worker()
+                    self.canvas.last_mouse = QPointF(-100, -100)
+                    self.assertEqual(preview, self.canvas.grab(rect).toImage())
+
+    def test_release_keeps_preview_and_toolbar_geometry_until_commit(self):
+        self.canvas.set_tool("brush")
+        QTest.mousePress(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(40, 40))
+        QTest.mouseMove(self.canvas, self.screen(70, 40))
+        canvas_geometry = self.canvas.geometry()
+        button_geometry = {name: button.geometry() for name, button in self.window.tool_buttons.items()}
+        origin = QPointF(self.canvas.origin)
+        busy_states = []
+
+        def observe(busy, label):
+            if busy:
+                app.processEvents()
+                busy_states.append(busy)
+                self.assertIsNotNone(self.canvas.stroke_preview)
+                self.assertFalse(self.window.progress.isVisible())
+                self.assertEqual(self.window.processing_label.text(), "")
+                self.assertEqual(self.canvas.geometry(), canvas_geometry)
+                self.assertEqual(self.canvas.origin, origin)
+                for name, button in self.window.tool_buttons.items():
+                    self.assertEqual(button.geometry(), button_geometry[name])
+
+        self.controller.busy_changed.connect(observe)
+        QTest.mouseRelease(self.canvas, Qt.MouseButton.LeftButton, pos=self.screen(70, 40))
+        self.wait_worker()
+        self.assertEqual(busy_states, [True])
+        self.assertIsNone(self.canvas.stroke_preview)
+        self.assertIsNone(self.canvas.stroke_image)
+        self.assertEqual(self.canvas.geometry(), canvas_geometry)
+        self.assertEqual(self.canvas.origin, origin)
 
 
 if __name__ == "__main__":

@@ -77,6 +77,14 @@ class LayerGroup:
     name: str = "Group"
     id: str = field(default_factory=lambda: uuid4().hex)
     collapsed: bool = False
+    visible: bool = True
+
+
+@dataclass(frozen=True)
+class PolygonPath:
+    points: tuple[tuple[float, float], ...]
+    closed: bool = False
+    selection_mode: str = "replace"
 
 
 @dataclass(frozen=True)
@@ -89,6 +97,7 @@ class Document:
     revision: int = field(default_factory=lambda: next(_revisions))
     selected_ids: frozenset[str] = field(default_factory=frozenset)
     groups: tuple[LayerGroup, ...] = ()
+    polygon_path: PolygonPath | None = None  # session state, like selections
 
     def __post_init__(self):
         ids = {layer.id for layer in self.layers}
@@ -121,7 +130,11 @@ class Document:
     def active(self):
         return next(layer for layer in self.layers if layer.id == self.active_id)
 
+    def layer_visible(self, layer):
+        return layer.visible and all(group.visible for group in self.groups if group.id == layer.group_id)
+
     def edited(self, **kwargs):
+        kwargs.setdefault("polygon_path", None)
         if "active_id" in kwargs and kwargs["active_id"] != self.active_id and "selected_ids" not in kwargs:
             kwargs["selected_ids"] = frozenset({kwargs["active_id"]})
         return replace(self, revision=next(_revisions), **kwargs)
@@ -139,6 +152,6 @@ def layer_on_canvas(layer, width, height):
 def composite(document):
     result = Image.new("RGBA", (document.width, document.height))
     for layer in document.layers:
-        if layer.visible:
+        if document.layer_visible(layer):
             result.alpha_composite(layer.image, (layer.x, layer.y))
     return result

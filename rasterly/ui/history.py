@@ -1,22 +1,37 @@
-"""Attached history window for the active document's complete retained timeline."""
-from PyQt6.QtCore import Qt
+"""History overlay for the active document's complete retained timeline."""
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QDockWidget, QWidget, QVBoxLayout, QLabel, QListWidget, QListWidgetItem
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
+                            QListWidgetItem, QToolButton, QGraphicsDropShadowEffect)
+from .icons import icon
 
 
-class HistoryDock(QDockWidget):
+class HistoryOverlay(QWidget):
+    visibility_changed = pyqtSignal(bool)
+
     def __init__(self, controller, jump, parent=None):
-        super().__init__("History", parent)
-        self.setObjectName("historyDock")
-        self.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
-        self.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
-        self.setMinimumWidth(235)
-        self.setMaximumWidth(340)
+        super().__init__(parent)
+        self.setObjectName("historyOverlay")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.controller = controller
         self.jump = jump
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(10, 12, 10, 10)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(8)
+        header = QHBoxLayout()
+        title = QLabel("HISTORY")
+        title.setObjectName("historyTitle")
+        header.addWidget(title)
+        header.addStretch()
+        self.close_button = QToolButton()
+        self.close_button.setIcon(icon("close", size=16))
+        self.close_button.setFixedSize(24, 24)
+        self.close_button.setToolTip("Close history")
+        self.close_button.setAccessibleName("Close history")
+        self.close_button.clicked.connect(self.hide)
+        header.addWidget(self.close_button)
+        layout.addLayout(header)
         self.document_name = QLabel()
         self.document_name.setObjectName("muted")
         layout.addWidget(self.document_name)
@@ -29,10 +44,30 @@ class HistoryDock(QDockWidget):
         hint.setWordWrap(True)
         hint.setObjectName("muted")
         layout.addWidget(hint)
-        self.setWidget(content)
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(20)
+        shadow.setOffset(-3, 4)
+        shadow.setColor(QColor(0, 0, 0, 130))
+        self.setGraphicsEffect(shadow)
         self.signature = None
         controller.changed.connect(self.refresh)
         self.refresh()
+        self.hide()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.visibility_changed.emit(True)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.visibility_changed.emit(False)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.hide()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
 
     def refresh(self):
         session = self.controller.active_session
@@ -63,3 +98,5 @@ class HistoryDock(QDockWidget):
 
     def choose(self, item):
         self.jump(item.data(Qt.ItemDataRole.UserRole))
+        if self.isVisible():
+            self.list.setFocus()

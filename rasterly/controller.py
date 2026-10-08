@@ -149,17 +149,22 @@ class EditorController(QObject):
         if self.busy or not self.document:
             return False
         selection = selection if selection and selection.valid else None
-        if selection == self.document.selection:
+        if selection == self.document.selection and self.document.polygon_path is None:
             return False
         if label is None:
             label = "Deselect" if selection is None else {
                 "rectangle": "Rectangle selection", "lasso": "Lasso selection"
             }.get(selection.kind, "Selection")
-        return self.apply(label, lambda doc: replace(doc, selection=selection))
+        return self.apply(label, lambda doc: replace(doc, selection=selection, polygon_path=None))
+
+    def set_polygon_path(self, path, label):
+        if self.busy or not self.document or path == self.document.polygon_path:
+            return False
+        return self.apply(label, lambda doc: replace(doc, polygon_path=path))
 
     def select_layer(self, id):
         if not self.busy and self.document and any(l.id == id for l in self.document.layers):
-            self.document = replace(self.document, active_id=id, selected_ids=frozenset({id}))
+            self.document = replace(self.document, active_id=id, selected_ids=frozenset({id}), polygon_path=None)
             self.changed.emit()
 
     def select_layers(self, ids, active_id=None):
@@ -173,7 +178,7 @@ class EditorController(QObject):
             active_id = doc.active_id if doc.active_id in selected else next(
                 layer.id for layer in reversed(doc.layers) if layer.id in selected)
         if selected != doc.selected_ids or active_id != doc.active_id:
-            self.document = replace(doc, active_id=active_id, selected_ids=selected)
+            self.document = replace(doc, active_id=active_id, selected_ids=selected, polygon_path=None)
             self.changed.emit()
 
     def toggle_undo(self):
@@ -198,13 +203,13 @@ class EditorController(QObject):
                 self.document = document
                 self.changed.emit()
 
-    def run_background(self, label, operation):
+    def run_background(self, label, operation, *, quiet=False):
         if self.busy or not self.document:
             return
         before = self.document
         owner = self.active_session
         self.busy = True
-        self.busy_changed.emit(True, label)
+        self.busy_changed.emit(True, "" if quiet else label)
         worker = ProcessingWorker(lambda: operation(before), self)
         self.worker = worker
 
@@ -227,7 +232,7 @@ class EditorController(QObject):
     def heal(self, source_offset=None):
         if not self.document:
             return
-        if not self.document.active.visible:
+        if not self.document.layer_visible(self.document.active):
             self.error.emit("Show the active layer before healing it.")
             return
         if self.document.active.text is not None:

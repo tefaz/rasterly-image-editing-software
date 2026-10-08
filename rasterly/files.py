@@ -51,7 +51,8 @@ def open_document(path):
             group_entries = metadata.get("groups", [])
             if len(group_entries) > 500:
                 raise ValueError("Invalid number of layer groups.")
-            groups = tuple(LayerGroup(str(entry["name"]), str(entry["id"]), bool(entry.get("collapsed", False)))
+            groups = tuple(LayerGroup(str(entry["name"]), str(entry["id"]), bool(entry.get("collapsed", False)),
+                                      bool(entry.get("visible", True)))
                            for entry in group_entries)
             return Document(width, height, tuple(layers), active, selected_ids=selected, groups=groups)
     if path.suffix.lower() not in RASTER_SUFFIXES:

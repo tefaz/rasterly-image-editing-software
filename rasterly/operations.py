@@ -54,7 +54,7 @@ def require_pixels(layer):
 
 def copy_selection(doc):
     """Copy active-layer pixels at full resolution, retaining irregular alpha."""
-    if not doc.active.visible:
+    if not doc.layer_visible(doc.active):
         raise ValueError("Show the active layer before copying its pixels.")
     x1, y1, x2, y2 = require_selection(doc)
     layer = doc.active
@@ -96,14 +96,29 @@ def merge_layers(doc):
     bottom = max(layer.bounds[3] for layer in selected)
     validate_size(right - left, bottom - top)
     image = Image.new("RGBA", (right - left, bottom - top))
-    visible = any(layer.visible for layer in selected)
+    same_group = len({layer.group_id for layer in selected}) == 1
+    # Within one folder, retain the children's own visibility so showing the
+    # folder later restores the merged artwork. Across folders, honor hiding.
+    visibility = lambda layer: layer.visible if same_group else doc.layer_visible(layer)
+    visible = any(visibility(layer) for layer in selected)
     for layer in selected:
-        if layer.visible or not visible:
+        if visibility(layer) or not visible:
             image.alpha_composite(layer.image, (layer.x - left, layer.y - top))
     highest = max(i for i, layer in enumerate(doc.layers) if layer.id in doc.selected_ids)
-    merged = Layer(doc.active.name, image, left, top, visible, group_id=doc.layers[highest].group_id)
-    layers = tuple(merged if i == highest else layer for i, layer in enumerate(doc.layers)
-                   if i == highest or layer.id not in doc.selected_ids)
+    group_id = doc.layers[highest].group_id
+    if not same_group and visible and any(group.id == group_id and not group.visible for group in doc.groups):
+        # Keep visible artwork outside a hidden destination folder, above its
+        # remaining members, so neither visibility nor folder order is broken.
+        highest = max(i for i, layer in enumerate(doc.layers) if layer.group_id == group_id)
+        group_id = None
+    merged = Layer(doc.active.name, image, left, top, visible, group_id=group_id)
+    layers = []
+    for i, layer in enumerate(doc.layers):
+        if layer.id not in doc.selected_ids:
+            layers.append(layer)
+        if i == highest:
+            layers.append(merged)
+    layers = tuple(layers)
     return doc.edited(layers=layers, active_id=merged.id, selected_ids=frozenset({merged.id}))
 
 
@@ -207,7 +222,7 @@ class PixelTarget:
 
 def extract_target(doc, whole_text=False):
     layer = doc.active
-    if not layer.visible:
+    if not doc.layer_visible(layer):
         raise ValueError("Show the active layer before moving or transforming it.")
     if layer.text is not None and (whole_text or not doc.selection):
         # Type transforms apply to the whole editable layer, including its layout margins.

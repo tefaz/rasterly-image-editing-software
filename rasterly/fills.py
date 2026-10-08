@@ -10,7 +10,7 @@ from .gradient import normalize_stops, sample_gradient
 
 def fill_bounds(doc):
     require_pixels(doc.active)
-    if not doc.active.visible:
+    if not doc.layer_visible(doc.active):
         raise ValueError("Show the active layer before filling it.")
     return require_selection(doc) if doc.selection else (0, 0, doc.width, doc.height)
 

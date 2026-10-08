@@ -3,6 +3,8 @@ from PyQt6.QtGui import QCursor, QIcon, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 
 PATHS = {
+    "polygon": '<path d="M5 18L8 5l12 4-2 11-13-2z"/><rect x="3" y="16" width="4" height="4"/><rect x="6" y="3" width="4" height="4"/><rect x="18" y="7" width="4" height="4"/><rect x="16" y="18" width="4" height="4"/>',
+    "history": '<path d="M4 8a8 8 0 1 1-1 7M4 3v5h5M12 7v5l3 2"/>',
     "folder": '<path d="M3 7V4h7l3 3h8v13H3V7zM3 9h18"/>',
     "brush": '<path d="M10 14L18 4c2-2 4 0 2 2l-8 10M10 14l2 2M10 14c-5-2-3 7-8 6 6 2 12-2 10-6"/>',
     "eraser": '<path d="M3 14l10-11 9 8-10 11H7l-4-4c-1-1-1-3 0-4zM8 9l9 8M12 22h10"/>',

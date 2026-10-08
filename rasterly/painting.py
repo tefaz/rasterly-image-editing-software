@@ -13,7 +13,7 @@ class PaintStroke:
     def __init__(self, document, size=24, opacity=100, hardness=100,
                  color=(0, 0, 0, 255), erase=False):
         require_pixels(document.active)
-        if not document.active.visible:
+        if not document.layer_visible(document.active):
             raise ValueError("Show the active layer before painting on it.")
         if not 1 <= size <= 2048 or not 0 <= opacity <= 100 or not 0 <= hardness <= 100:
             raise ValueError("Invalid brush size, opacity, or hardness.")

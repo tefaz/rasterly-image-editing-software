@@ -46,14 +46,22 @@ def set_collapsed(doc, group_id, collapsed):
                                      for group in doc.groups))
 
 
+def set_visible(doc, group_id, visible):
+    group = next(group for group in doc.groups if group.id == group_id)
+    if group.visible == visible:
+        return doc
+    return doc.edited(groups=tuple(replace(item, visible=visible) if item.id == group_id else item
+                                   for item in doc.groups))
+
+
 def ungroup(doc, group_id):
-    return doc.edited(layers=tuple(replace(layer, group_id=None) if layer.group_id == group_id else layer
+    return doc.edited(layers=tuple(replace(layer, group_id=None, visible=doc.layer_visible(layer)) if layer.group_id == group_id else layer
                                    for layer in doc.layers))
 
 
 def duplicate_group(doc, group_id):
     group = next(group for group in doc.groups if group.id == group_id)
-    copied = LayerGroup(group.name + " copy", collapsed=group.collapsed)
+    copied = LayerGroup(group.name + " copy", collapsed=group.collapsed, visible=group.visible)
     members = [layer for layer in doc.layers if layer.group_id == group_id]
     clones = tuple(replace(layer, id=uuid4().hex, group_id=copied.id) for layer in members)
     index = max(i for i, layer in enumerate(doc.layers) if layer.group_id == group_id) + 1

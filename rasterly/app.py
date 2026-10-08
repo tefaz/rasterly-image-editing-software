@@ -30,7 +30,7 @@ def main():
     app.setPalette(palette)
     app.setStyleSheet(STYLE)
     window = EditorWindow()
-    window.show()
+    window.showMaximized()
     if args.image:
         window.open_document(args.image)
     return app.exec()

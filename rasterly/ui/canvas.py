@@ -1,7 +1,7 @@
 """Full-resolution layer rendering with independent viewport and tool previews."""
 import math
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient
+from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient
 from PyQt6.QtWidgets import QWidget, QMenu
 from .images import qimage, CHECKER_LIGHT, CHECKER_DARK
 from .icons import tool_cursor
@@ -39,6 +39,7 @@ class Canvas(QWidget):
         self.patch_offset = None
         self.gradient_preview = None
         self.stroke_preview = None
+        self.stroke_image = None
         self.foreground_color = lambda: (0, 0, 0, 255)
         self.session = None
         self.last_mouse = QPointF(100, 100)
@@ -80,6 +81,10 @@ class Canvas(QWidget):
                        max(0, min(self.document.height, round(point.y()))))
 
     def document_changed(self):
+        polygon = self.tools["polygon"]
+        polygon.sync_document()
+        if polygon.points and self.tool_id != "polygon":
+            self.set_tool("polygon")
         stroke = getattr(self.tools[self.tool_id], "stroke", None)
         if stroke is not None and stroke.document is not self.document:
             self.tools[self.tool_id].cancel()
@@ -113,6 +118,10 @@ class Canvas(QWidget):
             self.setCursor(Qt.CursorShape.SizeAllCursor)
         elif self.tool_id == "text":
             self.setCursor(Qt.CursorShape.IBeamCursor)
+        elif (self.tool_id == "polygon" and self.tools["polygon"].has_area
+              and not self.tools["polygon"].closed
+              and self.tools["polygon"].near_start(self.to_document(self.last_mouse))):
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
         else:
             ready = False
             if self.tool_id == "patch" and self.document and not self.controller.busy:
@@ -239,6 +248,29 @@ class Canvas(QWidget):
     def draw_layer(self, painter, layer):
         self.draw_image(painter, layer.image, QRectF(layer.x, layer.y, layer.image.width, layer.image.height))
 
+    def update_stroke_image(self, stroke):
+        # Use one texture for the whole layer: separately scaled/clipped patches
+        # leave seams at fractional zoom, especially on translucent pixels.
+        if self.stroke_image is None:
+            layer = stroke.document.active
+            a, b, c, d = layer.bounds
+            x1, y1, x2, y2 = stroke.clip
+            left, top = min(a, x1), min(b, y1)
+            right, bottom = max(c, x2), max(d, y2)
+            image = QImage(right - left, bottom - top, QImage.Format.Format_RGBA8888)
+            image.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(image)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+            painter.drawImage(a - left, b - top, qimage(layer.image))
+            painter.end()
+            self.stroke_image = image, QRectF(left, top, right - left, bottom - top)
+        image, bounds = self.stroke_image
+        preview = stroke.preview
+        painter = QPainter(image)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.drawImage(preview.x - int(bounds.x()), preview.y - int(bounds.y()), qimage(preview.image))
+        painter.end()
+
     def draw_target(self, painter, target, box, flip_x=False, flip_y=False, quarter_turns=0):
         painter.save()
         painter.translate(box.center())
@@ -282,21 +314,13 @@ class Canvas(QWidget):
         painter.setClipRect(QRectF(0, 0, self.document.width, self.document.height), Qt.ClipOperation.IntersectClip)
         target = self.session.target if self.session else self.move_preview[0] if self.move_preview else None
         for layer in self.document.layers:
-            if not layer.visible:
+            if not self.document.layer_visible(layer):
                 continue
             if self.tools["text"].editing and layer.id == self.tools["text"].layer_id:
                 continue
             if layer.id == self.document.active_id and self.stroke_preview:
-                painter.save()
-                unpainted = QPainterPath()
-                unpainted.addRect(QRectF(0, 0, self.document.width, self.document.height))
-                preview = self.stroke_preview
-                unpainted.addRect(QRectF(preview.x, preview.y, preview.image.width, preview.image.height))
-                unpainted.setFillRule(Qt.FillRule.OddEvenFill)
-                painter.setClipPath(unpainted, Qt.ClipOperation.IntersectClip)
-                self.draw_layer(painter, layer)
-                painter.restore()
-                self.draw_layer(painter, preview)
+                image, bounds = self.stroke_image
+                painter.drawImage(bounds, image)
             elif layer.id == self.document.active_id and target:
                 if target.selected:
                     self.draw_layer(painter, target.base)
@@ -337,6 +361,8 @@ class Canvas(QWidget):
             dx, dy = self.patch_offset
             self.outline(painter, selection.translated(dx, dy), source=True)
         painter.restore()
+        if self.tool_id == "polygon" and not self.session:
+            self.tools["polygon"].paint(painter)
         if (self.tool_id in {"brush", "eraser"} and not self.session and not self.controller.busy
                 and not self.panning and not self.space_held and (self.underMouse() or self.dragging)):
             radius = self.tools[self.tool_id].size * self.zoom / 2
@@ -441,6 +467,8 @@ class Canvas(QWidget):
         self.dragging = False
         self.pending_selection = None
         self.tools[self.tool_id].cancel()
+        if self.tool_id != "text":
+            self.tools["text"].cancel()
         self.document_changed()
 
     def start_pending_selection(self, point, event):
@@ -481,6 +509,8 @@ class Canvas(QWidget):
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
         if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self.tool_id != "text" and self.tools["text"].editing and not self.tools["text"].commit():
             return
         self.pending_selection = None
         point = self.to_document(event.position())
@@ -541,7 +571,7 @@ class Canvas(QWidget):
                 self.controller.error.emit(str(error))
 
         self.update_tool_cursor()
-        if self.tool_id in {"brush", "eraser"}:
+        if self.tool_id in {"brush", "eraser", "polygon"}:
             self.update()
 
     def mouseReleaseEvent(self, event):
@@ -601,6 +631,8 @@ class Canvas(QWidget):
             self.space_held = True
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             event.accept()
+        elif self.tool_id == "polygon" and self.tools["polygon"].key_press(event):
+            event.accept()
         elif event.key() == Qt.Key.Key_Escape:
             if self.session:
                 self.cancel_transform()
@@ -625,6 +657,9 @@ class Canvas(QWidget):
         super().focusOutEvent(event)
 
     def contextMenuEvent(self, event):
+        if self.tool_id == "polygon" and not self.session:
+            self.tools["polygon"].context_menu(event)
+            return
         if self.session:
             menu = QMenu(self)
             horizontal = menu.addAction("Flip Horizontally")
